@@ -1,0 +1,35 @@
+{
+ "_readme": "Copy to config/customslop.json and fill in. Never put credentials here (see secrets.example.json).",
+
+ "mode": "review",
+ "daily_count": 3,
+ "cap": 50,
+ "defindex_first": 26000,
+ "defindex_last": 29999,
+ "ill_fit": 0.15,
+ "multi": 0.10,
+ "asset_tier": 2,
+ "discord_enabled": false,
+
+ "publish_target": "fastdl_repo",
+ "fastdl_repo": "YOUR_GITHUB_USER/YOUR_FASTDL_REPO",
+ "fastdl_prefix": "tf2classified/",
+ "fastdl_base_url": "https://YOUR_GITHUB_USER.github.io/YOUR_FASTDL_REPO/tf2classified/",
+ "allow_schema_replace": false,
+ "apply_hook": "runservers_bat",
+
+ "server_root": "<path to the server's tf2classified folder>",
+ "tf2_server_dir": "<path to the TF2 dedicated server content root (contains tf/ and hl2/)>",
+ "tf2_client_dir": "<path to a Team Fortress 2 client install (textures, sounds, fonts)>",
+ "tf2c_client_dir": null,
+ "steam_dir": null,
+ "fonts_dir": null,
+ "extra_donor_dirs": [],
+ "tf2cc_staging_dir": null,
+ "oldmerc_dir": null,
+ "tf2classic_b4_dir": null,
+ "tf2c_source_dir": null,
+ "enginetest_dir": null,
+ "card_reference_dir": null,
+ "workdir": null
+}

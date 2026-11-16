@@ -1,0 +1,30 @@
+# machine config and everything CustomSlop generates or extracts - never committed
+config/customslop.json
+secrets.json
+state/
+state_*/
+queue/
+cache/
+analysis/
+data/
+bundle/
+cards/
+tmp/
+enginetest/
+sandbox_server/
+proto/
+*.smx
+*.log
+__pycache__/
+*.pyc
+# game assets are never part of this repository
+*.mdl
+*.vvd
+*.vtx
+*.phy
+*.vtf
+*.vmt
+*.vpk
+*.ttf
+*.wav
+*.mp3
