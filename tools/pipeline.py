@@ -46,6 +46,8 @@ import sounds as sounds_mod  # noqa: E402
 import validate_model as VM  # noqa: E402
 import vmrender as VMR  # noqa: E402
 import iconfit as IF  # noqa: E402
+import labels  # noqa: E402
+import relevance  # noqa: E402
 from generate import (CLASSES, CLASS_SLOTS, FAMILY, CLIPLESS, BASE_SCHEMA, AF_SCHEMA, load_schema)  # noqa: E402
 
 POOL = os.path.join(ROOT, "analysis", "attribute_pool_5205.json")
@@ -109,6 +111,11 @@ class Ctx:
             self.audit = json.load(open(ap))
             self.donors = [d for d in self.donors if self.audit.get("%s:%s" % (d["src"], d["id"]), {}).get("ok", True)]
         self.sounds = sounds_mod.Picker()
+        cat_p = os.path.join(os.path.dirname(POOL), "attributes_5205.json")
+        self.attr_cat = {r["id"]: r for r in json.load(open(cat_p))} if os.path.exists(cat_p) else {}
+        # item_type_name tokens must resolve in TF2C's OWN localisation (not TF2's): labels.py
+        self.tf2c_tokens = labels.tf2c_tokens(cfg.get("server_root") or P.server_root())
+        self.stock_types = labels.stock_types(load_schema(BASE_SCHEMA), self.tf2c_tokens)
         # what build 5205's schema loader accepts (see validate_model.schema_check)
         ig = load_schema(BASE_SCHEMA)
         self.schema_defs = {a.get("name").lower(): dict(integer=a.get("stored_as_integer") == "1",
@@ -234,8 +241,9 @@ def semantic_side(p):
     return None
 
 
-def roll_value(p, rng, extreme=False):
-    """Value whose DISPLAYED number has the sign the description expects (attrpool.direction)."""
+def roll_value(p, rng, extreme=False, mild=False):
+    """Value whose DISPLAYED number has the sign the description expects (attrpool.direction).
+    mild (v2 rolls): sensible TF2-like magnitudes (+10..50%, -10..40%); extreme: big swings."""
     fmt, dirn = p["fmt"], p["direction"]
     s = (p.get("desc_text") or "")
     if dirn == "flag":
@@ -246,29 +254,33 @@ def roll_value(p, rng, extreme=False):
         if sem and fmt in ("value_is_percentage", "value_is_inverted_percentage"):
             # known mechanics win over the display sign: the card then shows exactly what TF2C shows
             up = sem == "up"
-            lo, hi = (1.1, 4.0 if extreme else 2.5) if up else (0.1 if extreme else 0.3, 0.9)
+            lo, hi = (1.1, 4.0 if extreme else (1.5 if mild else 2.5)) if up else \
+                (0.1 if extreme else (0.6 if mild else 0.3), 0.9)
             v = round(math.exp(rng.uniform(math.log(lo), math.log(hi))), 2)
         elif fmt in ("value_is_percentage", "value_is_inverted_percentage"):
             # displayed n = (v-1)*100 or (1-v)*100; choose |n| then solve for v
+            up_hi = 300 if extreme else (50 if mild else 150)
+            down_hi = 90 if extreme else (40 if mild else 70)
             if fmt == "value_is_percentage":
-                n = sign * (rng.uniform(10, 300 if extreme else 150) if sign > 0 else rng.uniform(10, 90 if extreme else 70))
+                n = sign * (rng.uniform(10, up_hi) if sign > 0 else rng.uniform(10, down_hi))
                 v = 1 + n / 100
             else:
-                n = sign * (rng.uniform(10, 90 if extreme else 70) if sign > 0 else rng.uniform(10, 300 if extreme else 150))
+                n = sign * (rng.uniform(10, down_hi) if sign > 0 else rng.uniform(10, up_hi))
                 v = 1 - n / 100
             v = round(v, 2)
         elif fmt == "value_is_additive_percentage":
-            v = sign * round(rng.uniform(0.05, 0.6 if extreme else 0.35), 2)
+            v = sign * round(rng.uniform(0.05, 0.6 if extreme else (0.25 if mild else 0.35)), 2)
         else:
             if re.search(r"second", s, re.I):
-                m = round(rng.uniform(1, 12 if extreme else 6), 1)
+                m = round(rng.uniform(1, 12 if extreme else (4 if mild else 6)), 1)
             elif re.search(r"health|hp\b", s, re.I):
-                m = rng.randint(10, 150 if extreme else 60)
+                m = rng.randint(10, 150 if extreme else (40 if mild else 60))
             elif "%" in s:
-                m = rng.randint(5, 60)
+                m = rng.randint(5, 60 if extreme else (30 if mild else 60))
             else:
-                m = rng.randint(1, 5)
-            v = sign * m if not (s.strip().startswith("-%s1")) else m
+                m = rng.randint(1, 5 if extreme or not mild else 3)
+            # a template that carries its own sign ("Per Shot: -%s1 ammo") takes the magnitude
+            v = m if re.search(r"[-+]%s1", s) else sign * m
     if p.get("integer"):
         v = int(round(v))
     for rx, kind, par in attrpool.GUARDS:      # crash-safety clamps
@@ -277,7 +289,8 @@ def roll_value(p, rng, extreme=False):
     return v
 
 
-def roll_attributes(ctx, rng, fam, slot, recipe):
+def roll_attributes_v1(ctx, rng, fam, slot, recipe, item_class=None, classes=()):
+    """The original roller (uniform over ~840 attributes): kept only as the report baseline."""
     want = recipe.get("n_attr") or rng.randint(3, 7)
     chosen, classes = [], set()
     cands = [p for p in ctx.pool if not p["cls"].startswith(("override_projectile_type", "custom_projectile_model"))]
@@ -310,9 +323,13 @@ def roll_attributes(ctx, rng, fam, slot, recipe):
         rest = [p for p in cands if p["cls"] not in classes]
         ws = np.array([weight(p) for p in rest])
         take(rest[int(rng.choices(range(len(rest)), weights=ws)[0])])
+    return finish_attributes(ctx, rng, chosen, fam, recipe)
+
+
+def finish_attributes(ctx, rng, chosen, fam, recipe, mild=False, big=()):
     out = []
     for p in chosen:
-        v = roll_value(p, rng, extreme=recipe.get("extreme", False))
+        v = roll_value(p, rng, extreme=recipe.get("extreme", False) or id(p) in big, mild=mild)
         name = p["name"]
         # values with known mechanics follow the mechanics; TF2's own format then shows them as the
         # game would. Only a negative number in front of magnitude wording ("-50% slower") reads
@@ -327,6 +344,76 @@ def roll_attributes(ctx, rng, fam, slot, recipe):
     if recipe.get("proj_model") and fam in ("rocket", "grenade"):
         out.append(dict(name="custom projectile model", cls="custom_projectile_model",
                         value=rng.choice(ctx.proj_models), disposition="guarded", mvm=False, hidden=True, read=True))
+    return out
+
+
+# relevance-aware roller (v2): most stats do something on THIS weapon for THIS class
+COMEDY_P = 0.30          # share of weapons with one deliberately irrelevant ("comedy") stat
+BIG_SWING_P = 0.12       # per-attribute chance of a big value swing
+CORE = re.compile(r"^(mult_dmg|mult_postfiredelay|mult_clipsize|mult_reload_time|mult_player_movespeed|add_maxhealth|"
+                  r"mult_maxammo|mult_spread_scale|mult_projectile_speed|mult_explosion_radius|mult_bullets_per_shot|"
+                  r"mult_dmgtaken|mult_deploy_time|mult_crit_chance|add_onhit_addhealth|mult_flame|mult_sniper_charge|"
+                  r"mult_minigun_spinup|mult_cloak|mult_engy|mult_medigun|mult_wpn_burn|mult_dmg_vs)")
+
+
+def roll_attributes(ctx, rng, fam, slot, recipe, item_class=None, classes=()):
+    """Attributes for one weapon: relevant to its item_class / family / class (relevance.py),
+    at least one meaningful upside and one meaningful downside, class-flavoured themes weighted up,
+    and at most one irrelevant "comedy" stat on ~35% of weapons. Safety exclusions and guards are
+    unchanged (same pool, same clamps)."""
+    if recipe.get("algo") == "v1":
+        return roll_attributes_v1(ctx, rng, fam, slot, recipe, item_class, classes)
+    classes = list(classes)
+    prov = relevance.provides(item_class or "", fam, classes, slot)
+    want = recipe.get("n_attr") or rng.choices([3, 4, 5, 6], weights=[3, 4, 3, 1])[0]
+    comedy = 1 if recipe.get("comedy", rng.random() < COMEDY_P) else 0
+    cands = [p for p in ctx.pool if not p["cls"].startswith(("override_projectile_type", "custom_projectile_model"))]
+    nd = {id(p): relevance.needs(p, ctx.attr_cat) for p in cands}
+    rel = [p for p in cands if nd[id(p)] in prov]
+    visible = lambda p: not p["hidden"] and p.get("desc_text")          # noqa: E731
+    chosen, used = [], set()
+
+    def weight(p):
+        w = 1.0
+        if not visible(p):
+            w *= 0.15
+        if relevance.flavour(p, classes):
+            w *= 4.0
+        if CORE.search(p["cls"]):
+            w *= 2.0
+        if nd[id(p)] != "any":
+            w *= 2.5                                         # weapon-specific mechanics over generic stats
+        return w
+
+    def pick(pool):
+        pool = [p for p in pool if p["cls"] not in used]
+        if not pool:
+            return None
+        p = pool[int(rng.choices(range(len(pool)), weights=[weight(q) for q in pool])[0])]
+        chosen.append(p)
+        used.add(p["cls"])
+        return p
+
+    for c in recipe.get("force", []):
+        m = [p for p in cands if p["cls"] == c and p["cls"] not in used]
+        if m:
+            chosen.append(m[0])
+            used.add(c)
+    for _ in range(recipe.get("mvm", 0)):
+        pick([p for p in rel if p["mvm"]])
+    pick([p for p in rel if p["effect"] == "positive" and visible(p)])          # meaningful upside
+    pick([p for p in rel if p["effect"] == "negative" and visible(p)])          # meaningful downside
+    while len(chosen) < want - comedy:
+        if pick(rel) is None:
+            break
+    if comedy:
+        # funniest when it belongs to another class's mechanic ("+30% sentry damage" on a rocket launcher)
+        joke = [p for p in cands if nd[id(p)] not in prov and nd[id(p)] not in ("unknown", "none") and visible(p)]
+        pick(joke or [p for p in cands if nd[id(p)] not in prov and nd[id(p)] != "unknown" and visible(p)])
+    big = {id(p) for p in chosen if rng.random() < BIG_SWING_P}
+    out = finish_attributes(ctx, rng, chosen, fam, recipe, mild=True, big=big)
+    for a, p in zip(out, chosen):
+        a["needs"], a["relevant"] = nd[id(p)], nd[id(p)] in prov
     return out
 
 
@@ -525,7 +612,7 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
         extra = [c for c in CLASSES if c not in classes and slot in CLASS_SLOTS[c] and arms_ok.get(c, True)]
         for c2 in rng.sample(extra, min(len(extra), recipe.get("multi_n", 1))):
             classes[c2] = "1"
-    attrs = roll_attributes(ctx, rng, fam, slot, recipe)
+    attrs = roll_attributes(ctx, rng, fam, slot, recipe, donor["kv"].get("item_class"), list(classes))
     name = names.make_name(rng, used_names)
     traits = [t for t, cond in (("self_ignite", any(a["cls"] == "customslop_ignite_self" for a in attrs)),
                                 ("odd_projectile", any(a["cls"] == "custom_projectile_model" for a in attrs)),
@@ -652,21 +739,20 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
     # ---- card
     lines = attrdesc.sort_lines(attrdesc.item_lines([(a["name"], a["value"]) for a in attrs], ctx.defs, ctx.L))
     lines.append((desc, "neutral"))
-    itn = donor["kv"].get("item_type_name")
-    typ = ctx.L.get(itn, "") if itn else ""
-    if not typ or typ.startswith("#"):
-        ic_ = donor["kv"].get("item_class", "")
-        stem = ic_.replace("tf_weapon_", "").replace("tf2c_weapon_", "")
-        typ = ctx.L.get("#TF_Weapon_" + stem, "") or ""
-    if not typ or typ.startswith("#"):
-        typ = TYPE_NAMES.get(donor["kv"].get("item_class", ""), donor["kv"].get("item_class", "").replace(
-            "tf_weapon_", "").replace("tf2c_weapon_", "").replace("_", " ").title())
+    # item_type_name: a token TF2C itself localises for this item class (labels.py), else a literal
+    ic_ = donor["kv"].get("item_class", "")
+    itn = labels.type_token(ic_, slot, donor["src"], donor["kv"].get("item_type_name"), ctx.tf2c_tokens, ctx.stock_types)
+    if itn:
+        typ = ctx.tf2c_tokens[itn[1:].lower()]
+    else:
+        typ = TYPE_NAMES.get(ic_, re.sub(r"^tf2?c?_weapon_", "", ic_).replace("_", " ").title())
+        itn = typ
     level = rng.randint(1, 100)
     type_line = ctx.L.get("#ItemTypeDesc").replace("%s1", str(level)).replace("%s2", typ)
     cimg = card.render_card(name, type_line, lines, icon, fonts=ctx.fonts)
     cimg.save(os.path.join(out_dir, "card.png"))
     # ---- schema fragment
-    it = emit(defindex, name, desc, donor, slot, classes, attrs, mdir, tag, outs, snd)
+    it = emit(defindex, name, desc, donor, slot, classes, attrs, mdir, tag, outs, snd, itn=itn)
     frag = '"%d"\n{\n%s}\n' % (defindex, kv.dump(it, 1))
     own = {n.lower(): dict(integer=False) for n in ctx.attr_registry}
     own["customslop ignite self on attack"] = dict(integer=False)
@@ -674,6 +760,10 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
     gate["schema"] = serrs or "ok"
     if serrs:
         raise RuntimeError("schema gate failed (5205 would reject the whole schema): %s" % serrs[:3])
+    lerrs = labels.label_check(frag, ctx.tf2c_tokens)
+    gate["labels"] = lerrs or "ok"
+    if lerrs:
+        raise RuntimeError("label gate failed: %s" % lerrs[:3])
     open(os.path.join(out_dir, "item.txt"), "w", encoding="utf-8").write(frag)
     summary = dict(defindex=defindex, name=name, description=desc, classes=classes, wrong_class=wrong, slot=slot,
                    family=fam, level=level, type_line=type_line,
@@ -823,11 +913,12 @@ class _One:
         self.cdmaterials = [cd]
 
 
-def emit(defindex, name, desc, donor, slot, classes, attrs, mdir, tag, outs, snd=None):
-    d = donor["kv"]
+def emit(defindex, name, desc, donor, slot, classes, attrs, mdir, tag, outs, snd=None, itn=None):
+    # never carry Merc / tf2cc-only keys onto a non-Merc item (labels.sanitize)
+    d = labels.sanitize(donor["kv"], donor["src"], list(classes))
     it = kv.KV()
     for k_, v_ in (("name", "customslop_%d" % defindex), ("item_name", name),
-                   ("item_type_name", d.get("item_type_name") or "#TF_Weapon"), ("item_description", desc),
+                   ("item_type_name", itn), ("item_description", desc),
                    ("item_quality", "unique"), ("propername", "0"), ("item_class", d.get("item_class")), ("item_slot", slot)):
         it.add(k_, v_)
     ubc = kv.KV()

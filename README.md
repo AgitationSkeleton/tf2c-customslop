@@ -17,6 +17,16 @@ credentials**; it reads your own installs at run time (see CREDITS.md).
    3-8 attributes drawn from **every** attribute in the schema, MvM upgrades included
    (`tools/attrpool.py`: allowed / guarded / excluded, each exclusion with its reason; useless-on-
    this-base attributes stay allowed but weighted low).
+   **Relevance** (`tools/relevance.py`): every attribute is tagged with what it needs to do
+   anything (a mechanic such as clip, bullets, explosive, sticky, flame, airblast, backstab,
+   minigun, sniper rifle, medigun; a class system such as Engineer buildings or Spy cloak; or
+   nothing on any CustomSlop item), and each weapon provides tags from its item class, family, slot
+   and class. Rolls are drawn from the relevant attributes, with at least one meaningful upside and
+   one meaningful downside, class-flavoured themes weighted up (Medic heal/uber, Spy cloak/backstab,
+   Engineer buildings, Pyro afterburn/airblast, Sniper charge/headshot, Heavy spin-up, Demo
+   stickies, Scout speed/jump, Soldier blast/rocket jump), sensible values with occasional big
+   swings, and one deliberately irrelevant "comedy" stat on ~30% of weapons.
+   `tools/statreport.py` compares the old and new rollers on the same donors.
 2. **Mutate** (`tools/mutate.py`): binary edits of the compiled model, no decompile. Droop, twist,
    bend, blunderbuss flare, distended barrels, squash, wobble, stretch and per-part rescaling.
    Long low-poly parts deform piecewise-affinely (no faceting). The grip region and everything
@@ -52,6 +62,20 @@ credentials**; it reads your own installs at run time (see CREDITS.md).
 * **Engine-load test** (`tools/enginetest.py`): an isolated, LAN-only, bots-only dedicated server
   (a copy of the binaries in your own folder; no game client, no Steam login) precaches and spawns
   every model and gives each item to a bot over local RCON.
+* **Label gate** (`tools/labels.py`): `item_type_name` must be a token TF2 Classified itself
+  localises (its own `resource/` files, not TF2's; e.g. `#TF_Weapon` only exists in TF2), and no
+  Merc / tf2cc-only key (`custom hand viewmodel`, `ACT_DOD_*` animation replacements, tf2cc sound
+  scripts, "Mercenary Weapon") is copied onto a non-Merc item. Checked at generation and at apply;
+  `tools/relabel.py` fixes already-catalogued items in place (same defindex).
+* **Schema VPK engine gate** (`tools/schemagate.py`): the schema VPK is built with Valve's
+  `vpk.exe` (a hand-written VPK v1 read fine in Python but build 5205 printed
+  `KeyValues Error: LoadFromBuffer: missing {` and dropped the *whole* custom schema). Before a VPK
+  is installed, an isolated LAN srcds (same engine build as the server, Metamod + SourceMod +
+  `tf2attributes_tf2c.smx` only, no rcon) boots with it and must report no `KeyValues Error` for
+  `scripts/items/*` and an "items with static attributes" count of at least the count without
+  CustomSlop plus CustomSlop's items. `nightly.py prepare` runs it ahead of the restart window;
+  `apply` installs only a VPK whose sha1 passed (or runs the gate itself if time allows), and
+  otherwise keeps the installed files.
 
 ## Hard rules (what CustomSlop may change)
 
@@ -67,7 +91,7 @@ credentials**; it reads your own installs at run time (see CREDITS.md).
 
 | Time | Step |
 |---|---|
-| 02:00 | `nightly.py prepare` (scheduled task running python.exe directly): generate `daily_count` weapons, publish their files + the merged schema to FastDL in **one commit** via the GitHub Git Data API, wait for the Pages build (re-trigger once if stuck), check every URL returns 200 |
+| 02:00 | `nightly.py prepare` (scheduled task running python.exe directly): generate `daily_count` weapons, publish their files + the merged schema to FastDL in **one commit** via the GitHub Git Data API, wait for the Pages build (re-trigger once if stuck), check every URL returns 200, then run the schema VPK engine gate (`apply.py --verify-only`) |
 | server restart window | `nightly.py apply`, called from your restart script while the servers are **down** (one line before the servers are relaunched): lock + journal + rollback, own items only, rotation beyond `cap`, bounded time so it can never block the launch; then the Discord post (detached) |
 
 Review mode (`"mode": "review"`) generates into `queue/pending/` for a human instead
@@ -75,7 +99,10 @@ Review mode (`"mode": "review"`) generates into `queue/pending/` for a human ins
 
 ## Setup
 
-1. Python 3.12+ with `numpy`, `Pillow`, `requests`; the GitHub CLI (`gh`, logged in) for publishing.
+1. Python 3.12+ with `numpy`, `Pillow`, `requests`; the GitHub CLI (`gh`, logged in) for publishing;
+   Valve's `vpk.exe` (config `vpk_exe`); a copy of the server's srcds binaries for the engine tests
+   (config `enginetest_dir`); `tf2attributes_tf2c.smx` installed on the server (the gate copies it,
+   with Metamod/SourceMod core, into its own isolated game folder).
 2. Copy `config/customslop.example.json` to `config/customslop.json` and fill in your paths.
 3. `python -I tools/setup_data.py` (extracts the schema/strings indexes from your installs),
    `python -I tools/donor_audit.py`, optionally `python -I tools/fit_icons.py --all`.

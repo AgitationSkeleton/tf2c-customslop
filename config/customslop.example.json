@@ -30,6 +30,9 @@
  "tf2classic_b4_dir": null,
  "tf2c_source_dir": null,
  "enginetest_dir": null,
+ "vpk_exe": "<path to Valve's vpk.exe, e.g. <TF2 dedicated server>/bin/vpk.exe>",
+ "gate_port": 27993,
+ "gate_timeout": 60,
  "card_reference_dir": null,
  "workdir": null
 }

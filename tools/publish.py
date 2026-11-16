@@ -49,15 +49,32 @@ STALL_MIN = 12
 LOG = os.path.join(Q.STATE_DIR, "publish_log.tsv")
 
 
+def base_diff(old, new, n=12):
+    """Line diff summary of two non-CustomSlop texts: (+added, -removed, sample changed lines)."""
+    import difflib
+    d = [l for l in difflib.unified_diff(old.splitlines(), new.splitlines(), lineterm="", n=0)
+         if l[:1] in "+-" and not l.startswith(("+++", "---"))]
+    return dict(added=sum(l.startswith("+") for l in d), removed=sum(l.startswith("-") for l in d),
+                sample=[l.strip()[:160] for l in d[:n]])
+
+
 def shared_files(repo, head, st, c):
     """The served schema + sound scripts (NOT CustomSlop-owned): only with allow_schema_replace.
-    New content = the CURRENTLY PUBLISHED file with CustomSlop's own blocks cut out and the
-    union of live + tonight's CustomSlop weapons inserted (apply.merge / merge_sounds keep the rest
-    byte for byte and prove it). Returns blob dicts, or None when not allowed."""
+    New content = the base INSTALLED on the server (custom/00tf2cc_schema.vpk, read now) with the
+    union of live + tonight's CustomSlop weapons inserted - exactly what apply installs. Proof: the
+    new file's non-CustomSlop text == the installed base's (own-range blocks cut), byte for byte.
+    A change of the base against what FastDL serves now (e.g. a tf2cc update) is reported, never
+    hidden; a base that is not the installed one is never published. Returns blob dicts, or None."""
     if not c.get("allow_schema_replace"):
         return None
     import apply as A
+    import vfs
     live = [w for w in st["weapons"].values() if w["status"] in ("approved", "live")]
+    root = c["server_root"]
+    base_rel, base_items = A.base_schema(root)
+    base_vpk = os.path.join(root, base_rel)
+    base_snd = vfs.VPK(base_vpk).read("scripts/items/custom_level_sounds.txt") or b""
+    base_sha = hashlib.sha1(open(base_vpk, "rb").read()).hexdigest()
     cur = tree_lookup(repo, head, list(SHARED))
     out = []
     for path in SHARED:
@@ -65,11 +82,24 @@ def shared_files(repo, head, st, c):
             raise SystemExit("shared file missing on FastDL: %s" % path)
         old_bz = base64.b64decode(gh("GET", "repos/%s/git/blobs/%s" % (repo, cur[path]))["content"])
         old = bz2.decompress(old_bz)
-        new = A.merge(old, sorted(live, key=lambda w: w["defindex"]), st, c) if path.endswith("custom_items_game.txt.bz2") \
-            else A.merge_sounds(old, live)
+        items = path.endswith("custom_items_game.txt.bz2")
+        if items:
+            new = A.merge(base_items, sorted(live, key=lambda w: w["defindex"]), st, c)
+            base_rest = A.cut_own(base_items.decode("utf-8", errors="replace"), c)
+            new_rest = A.strip_marked(new.decode("utf-8", errors="replace"))
+            old_rest = A.cut_own(A.strip_marked(old.decode("utf-8", errors="replace")), c)
+        else:
+            new = A.merge_sounds(base_snd, live)
+            base_rest = A.strip_sounds(base_snd.decode("utf-8", errors="replace"))
+            new_rest = A.strip_sounds(new.decode("utf-8", errors="replace"))
+            old_rest = A.strip_sounds(old.decode("utf-8", errors="replace"))
+        if new_rest != base_rest:
+            raise SystemExit("refusing: %s non-CustomSlop text != the installed base %s" % (path, base_rel))
+        diff = base_diff(old_rest, base_rest)
         data = bz2.compress(new, 9)
         out.append(dict(defindex=None, path=path, data=data, sha=git_sha(data), old_raw=len(old), new_raw=len(new),
-                        old_bz2=len(old_bz)))
+                        old_bz2=len(old_bz), base=base_rel, base_vpk_sha1=base_sha,
+                        base_changed=old_rest != base_rest, base_diff=diff))
     return out
 
 
@@ -188,8 +218,15 @@ def main():
               "would not know the CustomSlop items until the published custom_items_game.txt contains them")
     else:
         for b in shared:
-            print("  REPLACE (shared, byte-proof ok) %s  raw %d -> %d bytes, bz2 %d -> %d bytes"
-                  % (b["path"], b["old_raw"], b["new_raw"], b["old_bz2"], len(b["data"])))
+            print("  REPLACE (shared, proof vs installed base %s ok) %s  raw %d -> %d bytes, bz2 %d -> %d bytes"
+                  % (b["base"], b["path"], b["old_raw"], b["new_raw"], b["old_bz2"], len(b["data"])))
+            if b["base_changed"]:
+                print("    BASE CHANGED vs what FastDL serves (installed %s sha1 %s): +%d -%d lines"
+                      % (b["base"], b["base_vpk_sha1"][:12], b["base_diff"]["added"], b["base_diff"]["removed"]))
+                for l in b["base_diff"]["sample"]:
+                    print("      " + l)
+            else:
+                print("    base unchanged vs what FastDL serves")
         todo += shared
     print("remote %s@%s head %s: %d to add, %d already identical, %d CLASH (refused), %d to delete, %d delete skipped"
           % (repo, branch, head[:10], len(todo), len(same), len(clash), len(deletions), len(skipped_del)))
@@ -200,6 +237,8 @@ def main():
         plan_out = dict(repo=repo, branch=branch, parent_head=head, revert_sha=head, add=[dict(path=b["path"], bytes=len(b["data"]),
                         blob_sha=b["sha"]) for b in todo], delete=[d["path"] for d in deletions],
                         total_bz2_bytes=sum(len(b["data"]) for b in todo), commit_message=msg,
+                        shared=[dict(path=b["path"], base=b["base"], base_vpk_sha1=b["base_vpk_sha1"],
+                                     base_changed=b["base_changed"], base_diff=b["base_diff"]) for b in (shared or [])],
                         then=["poll pages/builds/latest until built (POST pages/builds once after %d min)" % STALL_MIN,
                               "HEAD every new URL until 200", "mark weapons published in the catalogue"])
         json.dump(plan_out, open(os.path.join(Q.STATE_DIR, "publish_dryrun.json"), "w"), indent=1)

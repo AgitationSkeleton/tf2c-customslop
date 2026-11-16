@@ -32,8 +32,8 @@ import argparse
 import datetime as dt
 import hashlib
 import json
-import os
 import re
+import os
 import shutil
 import struct
 import subprocess
@@ -59,30 +59,59 @@ DOWNLOADS = "addons/sourcemod/configs/customslop/downloads.txt"   # the plugin a
 BASE_VPKS = ["custom/00tf2cc_schema.vpk"]          # non-CustomSlop schema sources, in priority order
 
 
-# ------------------------------------------------------------------ VPK writer (v1, single file)
-def write_vpk(path, files):
-    """files: {relpath: bytes}. VPK v1 directory with the data embedded (archive 0x7fff)."""
-    tree = bytearray()
-    data = bytearray()
-    by_ext = {}
-    for rel, b in sorted(files.items()):
-        d, fn = os.path.split(rel.replace("\\", "/"))
-        name, ext = fn.rsplit(".", 1)
-        by_ext.setdefault(ext, {}).setdefault(d or " ", []).append((name, b))
-    for ext, dirs in by_ext.items():
-        tree += ext.encode() + b"\0"
-        for d, entries in dirs.items():
-            tree += d.encode() + b"\0"
-            for name, b in entries:
-                tree += name.encode() + b"\0"
-                crc = __import__("zlib").crc32(b) & 0xFFFFFFFF
-                tree += struct.pack("<IHHIIH", crc, 0, 0x7FFF, len(data), len(b), 0xFFFF)
-                data += b
-            tree += b"\0"
-        tree += b"\0"
-    tree += b"\0"
-    out = struct.pack("<III", 0x55AA1234, 1, len(tree)) + bytes(tree) + bytes(data)
-    open(path, "wb").write(out)
+# ------------------------------------------------------------------ schema VPK (Valve's vpk.exe)
+def build_vpk(path, files, c):
+    """files: {relpath: bytes} -> path, built by Valve's vpk.exe (config vpk_exe). A hand-written
+    VPK v1 read fine in Python but build 5205 rejected it ("KeyValues Error: LoadFromBuffer:
+    missing {"), dropping the whole custom schema, so only vpk.exe output is used - no fallback.
+    vpk.exe output is deterministic (same files -> same bytes), so a VPK verified by the engine
+    gate at 02:00 is recognised by its sha1 at 03:00."""
+    exe = c.get("vpk_exe")
+    if not exe or not os.path.isfile(exe):
+        raise RuntimeError("vpk.exe not found (config vpk_exe = %r) - refusing; the installed schema stays" % exe)
+    work = os.path.join(os.path.dirname(path), "vpkbuild")
+    shutil.rmtree(work, ignore_errors=True)
+    src = os.path.join(work, "00customslop_schema")
+    for rel, b in files.items():
+        f = os.path.join(src, rel)
+        os.makedirs(os.path.dirname(f), exist_ok=True)
+        open(f, "wb").write(b)
+    r = subprocess.run([exe, src], cwd=work, capture_output=True, text=True, timeout=120)
+    out = src + ".vpk"
+    if r.returncode != 0 or not os.path.exists(out):
+        raise RuntimeError("vpk.exe failed (rc %s): %s" % (r.returncode, (r.stdout + r.stderr)[-300:]))
+    sig, ver = struct.unpack("<II", open(out, "rb").read(8))
+    if sig != 0x55AA1234 or ver != 2:
+        raise RuntimeError("vpk.exe wrote an unexpected VPK header (%#x v%d)" % (sig, ver))
+    os.replace(out, path)
+    shutil.rmtree(work, ignore_errors=True)
+
+
+def gate_ok(st, vp, server_root, c, t0, budget, log):
+    """The staged VPK must have passed the engine gate (schemagate.py): looked up by sha1 (prepare
+    verifies at 02:00), else run now if the time budget allows two gate boots, else refuse."""
+    vsha = sha(open(vp, "rb").read())
+    ver = st.setdefault("gate_verified", {})
+    if ver.get(vsha, {}).get("ok"):
+        log("engine gate: VPK %s already verified (%s, %s items)" % (vsha[:12], ver[vsha]["at"], ver[vsha]["count"]))
+        return True
+    if "sandbox_server" in server_root.replace("\\", "/") and os.environ.get("CUSTOMSLOP_GATE") != "force":
+        log("engine gate skipped (sandbox test run)")
+        return True
+    left = budget - (time.time() - t0)
+    need = 2 * int(c.get("gate_timeout", 60)) + 20
+    if left < need:
+        log("engine gate: VPK %s not verified and only %ds left (need %ds) - refusing" % (vsha[:12], left, need))
+        return False
+    import schemagate
+    r = schemagate.verify(vp, server_root, c)
+    ver[vsha] = dict(ok=r["ok"], at=dt.datetime.now().isoformat(timespec="seconds"), count=r.get("count"),
+                     baseline=r.get("baseline"), need=r.get("need"), why=r.get("why"), seconds=r.get("seconds"))
+    for k in sorted(ver, key=lambda k: ver[k]["at"])[:-20]:      # keep the last 20 results
+        del ver[k]
+    log("engine gate: %s in %ss - count %s, need %s %s" % ("PASS" if r["ok"] else "FAIL", r.get("seconds"),
+                                                          r.get("count"), r.get("need"), r.get("why") or ""))
+    return r["ok"]
 
 
 # ------------------------------------------------------------------ helpers
@@ -177,16 +206,37 @@ def _blocks(text):
     return out, kids
 
 
+MARK_RE = __import__("re").compile(r"\n// ---- CustomSlop \(generated; do not edit\) ----\n.*?// ---- end CustomSlop ----\n",
+                                  __import__("re").S)
+
+
+def cut_own(text, c):
+    """Text with every block in CustomSlop's own defindex range cut out (everything else verbatim)."""
+    secs, kids = _blocks(text)
+    for a, b in sorted([(a, b) for sec in kids for k, a, b in kids[sec] if is_own(k, c)], reverse=True):
+        text = text[:a] + text[b:]
+    return text
+
+
+def strip_marked(text):
+    """Text with CustomSlop's marked insertion blocks removed = the non-CustomSlop text of a merged file."""
+    return MARK_RE.sub("", text)
+
+
+def strip_sounds(text):
+    a = text.find(SND_BEGIN)
+    if a >= 0:
+        b = text.find(SND_END, a)
+        text = text[:a] + text[b + len(SND_END):]
+    return text
+
+
 def merge(base_bytes, live, st, c):
     """Byte-preserving merge: the base text is kept verbatim except that blocks in CustomSlop's own
     defindex range are cut out; CustomSlop's items/attributes are inserted before the closing brace
     of the items / attributes sections. Proof check: removing exactly the inserted spans from the
     result must give back the base text with only own-range blocks removed."""
-    text = base_bytes.decode("utf-8", errors="replace")
-    secs, kids = _blocks(text)
-    cut = sorted([(a, b) for sec in kids for k, a, b in kids[sec] if is_own(k, c)], reverse=True)
-    for a, b in cut:
-        text = text[:a] + text[b:]
+    text = cut_own(base_bytes.decode("utf-8", errors="replace"), c)
     stripped = text
     secs, _ = _blocks(text)
     frag_items = "".join(open(os.path.join(ROOT, w["dir"], "item.txt"), encoding="utf-8").read() for w in live)
@@ -203,6 +253,10 @@ def merge(base_bytes, live, st, c):
     errs = VM.schema_check(frag_items, defs, own)
     if errs:
         raise RuntimeError("schema gate failed - refusing (5205 would reject the whole schema): %s" % errs[:3])
+    import labels
+    lerrs = labels.label_check(frag_items, labels.tf2c_tokens(c["server_root"]))
+    if lerrs:
+        raise RuntimeError("label gate failed - refusing (fix with tools/relabel.py): %s" % lerrs[:3])
     ins = []
     for sec, frag in sorted((("items", frag_items), ("attributes", frag_attrs)), key=lambda x: -secs[x[0]][1]):
         at = secs[sec][1] - 1                                # position of the closing brace
@@ -274,7 +328,8 @@ def rollback(server_root, txn, log):
     log("rolled back txn %s (%d steps)" % (txn["id"], len(txn["steps"])))
 
 
-def apply(server_root, dry=False, fail_after=None, budget=180):
+def apply(server_root, dry=False, fail_after=None, budget=180, verify_only=False):
+    """verify_only: plan + stage + engine gate, record the result; never writes the server (02:00)."""
     t0 = time.time()
     c = Q.cfg()
     st = Q.load_state(c)
@@ -293,13 +348,13 @@ def apply(server_root, dry=False, fail_after=None, budget=180):
             log("another apply holds the lock - skipping")
             return 0
         os.remove(LOCK)
-        return apply(server_root, dry, fail_after, budget)
+        return apply(server_root, dry, fail_after, budget, verify_only)
     try:
         if os.path.exists(TXN):                                   # half-applied update from a crash
             rollback(server_root, json.load(open(TXN)), log)
             os.remove(TXN)
             Q.journal(st, "apply_recovered_rollback")
-        if srcds_running(server_root):
+        if not verify_only and srcds_running(server_root):
             log("srcds for this install is running - not applying (servers must be down)")
             Q.journal(st, "apply_skipped", why="srcds running")
             Q.save_state(st)
@@ -314,7 +369,7 @@ def apply(server_root, dry=False, fail_after=None, budget=180):
         live = live[len(retire):]
         applied = [w for w in live if w["status"] == "approved"]
         plugin = os.path.join(server_root, "addons", "sourcemod", "plugins", "customslop.smx")
-        if applied and not os.path.exists(plugin) and "sandbox_server" not in server_root:
+        if applied and not verify_only and not os.path.exists(plugin) and "sandbox_server" not in server_root:
             # without the plugin the assets never reach the download table: clients would get the
             # schema but not the models - refuse until the plugin is installed
             log("customslop.smx is not installed on the server - not applying new weapons")
@@ -326,7 +381,12 @@ def apply(server_root, dry=False, fail_after=None, budget=180):
             Q.journal(st, "apply_nothing_to_do")
             Q.save_state(st)
             return 0
-        base_rel, base_bytes = base_schema(server_root)
+        base_rel, base_bytes = base_schema(server_root)          # the base INSTALLED now (never a stored copy)
+        base_sha = sha(open(os.path.join(server_root, base_rel), "rb").read())
+        prev = next((j for j in reversed(st.get("journal", [])) if j.get("what") == "applied" and j.get("base_vpk_sha1")), None)
+        if prev and prev["base_vpk_sha1"] != base_sha:
+            log("base %s changed since the last apply (%s -> %s): re-merging on the installed base"
+                % (base_rel, prev["base_vpk_sha1"][:12], base_sha[:12]))
         merged = merge(base_bytes, sorted(live, key=lambda w: w["defindex"]), st, c)
         dl = "".join("%s\n" % p_ for w in sorted(live, key=lambda w: w["defindex"]) for p_ in w["assets"])
         plan = {SCHEMA_VPK: None, LOOSE: merged, DOWNLOADS: dl.encode("utf-8")}
@@ -354,9 +414,23 @@ def apply(server_root, dry=False, fail_after=None, budget=180):
         lsounds = vfs.VPK(os.path.join(server_root, base_rel)).read("scripts/items/custom_level_sounds.txt")
         files = {"scripts/items/custom_items_game.txt": merged}
         files["scripts/items/custom_level_sounds.txt"] = merge_sounds(lsounds or b"", live)
-        write_vpk(vp, files)
+        build_vpk(vp, files, c)
         if vfs.VPK(vp).read("scripts/items/custom_items_game.txt") != merged:
             raise RuntimeError("staged VPK does not read back")
+        # engine gate: the staged VPK must be one build 5205 really loads (schemagate.py)
+        passed = gate_ok(st, vp, server_root, c, t0, budget, log)
+        if verify_only:
+            fresh = Q.load_state(c)                                  # record only the gate result
+            fresh["gate_verified"] = st.get("gate_verified", {})
+            Q.journal(fresh, "gate_verify", ok=passed, vpk_sha1=sha(open(vp, "rb").read()))
+            Q.save_state(fresh)
+            log("verify-only: engine gate %s; nothing written to the server" % ("PASS" if passed else "FAIL"))
+            return 0
+        if not passed:
+            Q.journal(st, "apply_refused", why="engine gate", vpk_sha1=sha(open(vp, "rb").read()))
+            Q.save_state(st)
+            log("NOT APPLYING: the staged schema VPK did not pass the engine gate; the installed files stay")
+            return 0
         plan[SCHEMA_VPK] = vp
         txn = dict(id=dt.datetime.now().strftime("%Y%m%d-%H%M%S"), steps=[])
         bdir = os.path.join(Q.STATE_DIR, "backups", txn["id"])
@@ -400,10 +474,12 @@ def apply(server_root, dry=False, fail_after=None, budget=180):
             w["status"], w["live_since"] = "live", today
         for w in retire:
             w["status"], w["retired"] = "retired", today
-        st.setdefault("announcements", []).append(dict(date=today, txn=txn["id"], weapons=[w["defindex"] for w in applied],
-                                                       posted=False))
+        if applied:                                  # an apply without new weapons posts nothing
+            st.setdefault("announcements", []).append(dict(date=today, txn=txn["id"],
+                                                           weapons=[w["defindex"] for w in applied], posted=False))
         Q.journal(st, "applied", txn=txn["id"], new=[w["defindex"] for w in applied],
-                  retired=[w["defindex"] for w in retire], schema_sha1=sha(merged))
+                  retired=[w["defindex"] for w in retire], schema_sha1=sha(merged), base=base_rel,
+                  base_vpk_sha1=base_sha)
         Q.save_state(st)
         log("applied txn %s" % txn["id"])
         return 0
@@ -425,8 +501,10 @@ if __name__ == "__main__":
     ap.add_argument("--server-root", required=True)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--fail-after", type=int)
+    ap.add_argument("--verify-only", action="store_true", help="stage + engine gate only (read-only on the server)")
     a = ap.parse_args()
-    live_root = os.path.abspath(Q.DEFAULT_CFG["server_root"]).lower()
-    if os.path.abspath(a.server_root).lower() == live_root and not os.environ.get("CUSTOMSLOP_LIVE_OK"):
-        sys.exit("refusing to touch the live server from the research prototype")
-    sys.exit(apply(a.server_root, a.dry_run, a.fail_after))
+    live_root = os.path.abspath(Q.cfg().get("server_root") or "").lower()
+    if os.path.abspath(a.server_root).lower() == live_root and not os.environ.get("CUSTOMSLOP_LIVE_OK") \
+            and not (a.verify_only or a.dry_run):
+        sys.exit("refusing to write the live server without CUSTOMSLOP_LIVE_OK=1 (nightly.py apply sets it)")
+    sys.exit(apply(a.server_root, a.dry_run, a.fail_after, verify_only=a.verify_only))

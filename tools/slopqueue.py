@@ -32,7 +32,7 @@ sys.path.insert(0, HERE)
 STATE_DIR = os.environ.get("CUSTOMSLOP_STATE_DIR") or os.path.join(ROOT, "state")
 CFG = os.path.join(STATE_DIR, "customslop.json") if os.path.exists(os.path.join(STATE_DIR, "customslop.json"))     else os.path.join(ROOT, "config", "customslop.json")
 STATE = os.path.join(STATE_DIR, "catalogue.json")
-QUEUE = os.path.join(ROOT, "queue")
+QUEUE = os.environ.get("CUSTOMSLOP_QUEUE_DIR") or os.path.join(ROOT, "queue")   # override: dry runs only
 DEFAULT_CFG = {
     "mode": "review",                 # review | automation   (automation only after the user's go-ahead)
     "daily_count": 3,
@@ -45,6 +45,9 @@ DEFAULT_CFG = {
     "fonts_dir": None,                # folder with tf2build.ttf + tf2secondary.ttf; None = find the TF2 install
     "discord_enabled": False,         # posts only after a successful nightly apply (automation mode)
     "server_root": None,              # from config/customslop.json
+    "vpk_exe": None,                  # Valve's vpk.exe (e.g. <TF2 dedicated server>/bin/vpk.exe): builds the schema VPK
+    "gate_port": 27993,               # schemagate.py: isolated LAN srcds on 127.0.0.1
+    "gate_timeout": 60,               # per gate boot (a boot takes ~15 s)
 }
 
 

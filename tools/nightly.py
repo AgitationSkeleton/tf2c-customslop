@@ -11,6 +11,8 @@ every step idempotent, safe to re-run after a reboot or a killed process; never 
             publish_target in ONE commit through the GitHub Git Data API (no clone), then poll the
             Pages build and HEAD every new URL until 200, plus 10 minutes for the CDN (max-age=600)
          3. mark published=true per weapon; anything unverified simply waits for the next night
+         4. engine gate: apply.py --verify-only stages the schema VPK apply will install and boots an
+            isolated LAN srcds on it (schemagate.py); the VPK's sha1 is recorded as verified
   03:00  RunServers.bat -> python -I nightly.py apply  (servers are down: KillServers ran 02:59)
          apply.py: lock + journal + rollback; own items only; never blocks the server launch
   03:0x  python -I nightly.py announce    (end of apply; posts only what was applied)
@@ -63,9 +65,25 @@ def prepare(a):
         return
     try:
         subprocess.run([sys.executable, "-I", os.path.join(HERE, "publish.py"), "--apply"], check=False,
-                       timeout=left)
+                       timeout=max(60, left - 5 * 60))
     except subprocess.TimeoutExpired:
         print("publish timed out; unverified weapons stay unpublished (apply skips them)")
+    verify(c)
+
+
+def verify(c):
+    """Engine gate ahead of the 03:00 window: stage exactly what apply will install (same catalogue,
+    same live base schema, deterministic vpk.exe build) and boot the isolated gate server on it;
+    apply recognises the verified VPK by its sha1 (and runs the gate itself only if time allows)."""
+    left = seconds_left()
+    if left < 3 * 60:
+        print("no time left for the engine gate before the deadline - apply will run it if it can")
+        return
+    try:
+        subprocess.run([sys.executable, "-I", os.path.join(HERE, "apply.py"), "--server-root", c["server_root"],
+                        "--verify-only"], check=False, timeout=left)
+    except subprocess.TimeoutExpired:
+        print("engine gate timed out before the deadline")
 
 
 def publish_plan(st, c):
@@ -102,12 +120,12 @@ def run_apply(a):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["prepare", "apply"])
+    ap.add_argument("step", choices=["prepare", "apply", "verify"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--publish-only", action="store_true")
     a = ap.parse_args()
     try:
-        {"prepare": prepare, "apply": run_apply}[a.step](a)
+        {"prepare": prepare, "apply": run_apply, "verify": lambda a_: verify(Q.cfg())}[a.step](a)
     except Exception as e:                 # never fail the caller (RunServers.bat must continue)
         print("nightly %s error: %r" % (a.step, e))
     sys.exit(0)
