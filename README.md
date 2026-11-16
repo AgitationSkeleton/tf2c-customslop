@@ -40,8 +40,19 @@ credentials**; it reads your own installs at run time (see CREDITS.md).
 4. **Sounds** (`tools/sounds.py`): random fire/reload/empty/deploy/melee sounds from content every
    client already has (TF2C, TF2, HL2): ~70% weapon sounds, ~23% other effects, ~7% voice lines.
    Loops, overlong and earrape-prone files are rejected.
-5. **Icon** (`tools/iconfit.py`): a software renderer whose camera and lighting are fitted to the
-   donor's own stock icon, so the result looks like a stock icon.
+5. **Icon** (`tools/iconfit.py`, `tools/srcshade.py`; config `"renderer": "v2"`): a software
+   renderer whose camera is fitted to the donor's OWN source-game icon (TF2C backpack icons, April
+   Fools icons, Open Fortress bucket sprites via `of_dir`, TF2 Classic beta sprites; nearest
+   same-weapon stock icon otherwise) by silhouette IoU over view direction, roll, mirror and
+   perspective distance (side-on prior, orientation siblings refined, re-ranked by shading; view
+   models posed in their idle frame when a game draws its icons from them). Shading follows Source /
+   TF2C's VertexLitGeneric in linear light: sRGB decode, full-Lambert (or half-Lambert where the
+   material asks) through the material's `$lightwarptexture` (2x, stock weapon lightwarp as
+   fallback), `$phong` (exponent/mask textures, boost, fresnel ranges), `$rimlight`, `$selfillum`,
+   `$envmaptint`, then sRGB encode; one light rig calibrated against real icons
+   (`tools/calibrate_render.py`: mean colour, saturation, near-black share, luminance histogram).
+   Edges: 4x supersample box-downsampled on premultiplied float alpha, edge colour bled into
+   transparent texels, premultiplied mips, uncompressed BGRA8888 icon VTF (no fringes or halos).
 6. **Card** (`tools/card.py`, `tools/attrdesc.py`): TF2's item-info card, with TF2's own attribute
    description strings and formats (`value_is_percentage`, `inverted_percentage`, `additive`, ...),
    coloured by `effect_type`.

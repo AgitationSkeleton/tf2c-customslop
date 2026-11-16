@@ -144,8 +144,9 @@ def _dxt_blocks(rgba, fmt):
     return blocks
 
 
-def encode(rgba, fmt=15, mips=True, flags=0x2000 | 0x4 | 0x8):
-    """Encode HxWx4 uint8 RGBA as a VTF 7.2: fmt 12 = BGRA8888, 13 = DXT1, 15 = DXT5."""
+def encode(rgba, fmt=15, mips=True, flags=0x2000 | 0x4 | 0x8, resample=None):
+    """Encode HxWx4 uint8 RGBA as a VTF 7.2: fmt 12 = BGRA8888, 13 = DXT1, 15 = DXT5.
+    resample(rgba, (w, h)) -> rgba builds the mip chain (default: straight-alpha Lanczos)."""
     from PIL import Image
     h, w = rgba.shape[:2]
     levels = [rgba]
@@ -153,7 +154,7 @@ def encode(rgba, fmt=15, mips=True, flags=0x2000 | 0x4 | 0x8):
         im = Image.fromarray(rgba, "RGBA")
         while max(levels[-1].shape[:2]) > 1:
             nw, nh = max(1, levels[-1].shape[1] // 2), max(1, levels[-1].shape[0] // 2)
-            levels.append(np.asarray(im.resize((nw, nh), Image.LANCZOS)))
+            levels.append(resample(rgba, (nw, nh)) if resample else np.asarray(im.resize((nw, nh), Image.LANCZOS)))
     if fmt == 13:
         flags &= ~0x2000
         flags |= 0x100 if rgba[:, :, 3].min() < 255 else 0   # ONEBITALPHA when holes exist

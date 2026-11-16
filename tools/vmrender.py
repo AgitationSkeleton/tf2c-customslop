@@ -95,14 +95,60 @@ def textures_for(ctx, m, files_root):
     return out
 
 
-def raster(items, size, fov=54.0):
+def materials_for(ctx, m, files_root):
+    """{texture index: srcshade material dict} from each texture's VMT ($phong*, $lightwarptexture,
+    $rimlight*, $selfillum, exponent / bump textures). Reads the generated files first, then ctx.fs."""
+    import pipeline
+    import srcshade
+
+    def read_vtf(rel):
+        raw = open(os.path.join(files_root, rel), "rb").read() if files_root and os.path.exists(
+            os.path.join(files_root, rel)) else ctx.fs.read(rel)
+        try:
+            return vtf.decode(raw)[2] if raw else None
+        except Exception:
+            return None
+    out = {}
+    for k, t in enumerate(m.textures):
+        out[k] = {}
+        for cd in m.cdmaterials:
+            rel = "materials/" + re.sub("/+", "/", (cd + t).replace(chr(92), "/")).lstrip("/").lower() + ".vmt"
+            txt = None
+            if files_root and os.path.exists(os.path.join(files_root, rel)):
+                txt = open(os.path.join(files_root, rel), encoding="latin-1").read()
+            elif ctx.fs.read(rel) is not None:
+                _, txt = pipeline.resolve_vmt(ctx, pipeline._One(cd), t)
+            if txt:
+                out[k] = srcshade.parse_vmt(txt, read_vtf)
+                break
+    # stock weapon lightwarp (used only if the calibrated rig says materials without one need it)
+    fw = read_vtf("materials/models/lightwarps/weapon_lightwarp.vtf")
+    for k in out:
+        if fw is not None:
+            out[k]["fallback_warp"] = fw[0, :, :3].astype(np.float32) / 255.0
+    return out
+
+
+def raster(items, size, fov=54.0, mats_list=None):
+    """mats_list (v2): per item {texture index: srcshade material} -> Source-like shading."""
     Wd, Ht = size
+    v2 = mats_list is not None
+    if v2:
+        nb = np.zeros((Ht, Wd, 3), np.float32)
+        ab = np.zeros((Ht, Wd, 3), np.float32)
+        bab = np.ones((Ht, Wd), np.float32)
+        uvb = np.zeros((Ht, Wd, 2), np.float32)
+        mb = np.full((Ht, Wd), -1, np.int32)
+        allm = {}
+        for ii, ml in enumerate(mats_list):
+            for k, v in (ml or {}).items():
+                allm[ii * 1000 + k] = v
     f = (Wd / 2) / np.tan(np.radians(fov / 2))
     zbuf = np.full((Ht, Wd), np.inf)
     col = np.zeros((Ht, Wd, 3))
     alpha = np.zeros((Ht, Wd))
     L1 = np.array([0.3, 0.6, 0.75]); L1 /= np.linalg.norm(L1)
-    for P, N, uv, tris, tex in items:
+    for ii, (P, N, uv, tris, tex) in enumerate(items):
         x = P[:, 0]
         ok = x > 1.0
         sx = Wd / 2 - P[:, 1] / np.maximum(x, 1e-3) * f
@@ -137,26 +183,38 @@ def raster(items, size, fov=54.0):
                 zb[win] = z[win]
                 n = (w0[..., None] * N[a] + w1[..., None] * N[b_] + w2[..., None] * N[c])[win]
                 n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-9
+                u = (w0[..., None] * uv[a] + w1[..., None] * uv[b_] + w2[..., None] * uv[c])[win]
                 if tx is not None:
-                    u = (w0[..., None] * uv[a] + w1[..., None] * uv[b_] + w2[..., None] * uv[c])[win]
-                    alb = tx[(np.mod(u[:, 1], 1) * th).astype(int).clip(0, th - 1),
-                             (np.mod(u[:, 0], 1) * tw).astype(int).clip(0, tw - 1), :3] / 255.0
+                    tt = tx[(np.mod(u[:, 1], 1) * th).astype(int).clip(0, th - 1),
+                            (np.mod(u[:, 0], 1) * tw).astype(int).clip(0, tw - 1)]
+                    alb = tt[:, :3] / 255.0
+                    if v2 and tt.shape[1] > 3:
+                        bab[y0:y1 + 1, x0:x1 + 1][win] = tt[:, 3] / 255.0
                 else:
                     alb = np.full((win.sum(), 3), 0.6)
+                if v2:
+                    nb[y0:y1 + 1, x0:x1 + 1][win] = n
+                    ab[y0:y1 + 1, x0:x1 + 1][win] = alb
+                    uvb[y0:y1 + 1, x0:x1 + 1][win] = u
+                    mb[y0:y1 + 1, x0:x1 + 1][win] = ii * 1000 + mat
                 hl = (n @ L1) * 0.5 + 0.5
                 col[y0:y1 + 1, x0:x1 + 1][win] = np.clip(alb * (0.3 + 0.75 * hl ** 2)[:, None], 0, 1)
                 alpha[y0:y1 + 1, x0:x1 + 1][win] = 1
     bg = np.array([0.27, 0.3, 0.34])
+    if v2:
+        import srcshade as SS
+        col = SS.shade(nb, ab, bab, uvb, mb, alpha, allm)
     img = col * alpha[..., None] + bg * (1 - alpha[..., None])
     return Image.fromarray((img * 255).astype(np.uint8), "RGB")
 
 
-def render_viewmodel(ctx, vmodel_path, arms_rel, files_root=None, size=(960, 540)):
+def render_viewmodel(ctx, vmodel_path, arms_rel, files_root=None, size=(960, 540), v2=False):
     import pipeline
     vm = S.load(vmodel_path)
     W = anim.pose(vm)
     P, N = skinned(vm, W)
     items = [(P, N, vm.raw_uv, vm.tris, {k: v for k, v in textures_for(ctx, vm, files_root).items()})]
+    ml = [materials_for(ctx, vm, files_root)] if v2 else None
     report = None
     tmp = tempfile.mkdtemp()
     ap = pipeline.extract_model(ctx, arms_rel, tmp)
@@ -166,8 +224,10 @@ def render_viewmodel(ctx, vmodel_path, arms_rel, files_root=None, size=(960, 540
         AW = bonemerge(arms, names, W)
         AP, AN = skinned(arms, AW)
         items.append((AP, AN, arms.raw_uv, arms.tris, textures_for(ctx, arms, None)))
+        if v2:
+            ml.append(materials_for(ctx, arms, None))
         report = arms_bonemerge_report(vm, arms)
-    eye = raster(items, size)
+    eye = raster(items, size, mats_list=ml)
     # side view of the same idle pose (arms + weapon), to see the mutation from the outside
     allp = np.vstack([it[0] for it in items[:1]])
     cen = (allp.min(0) + allp.max(0)) / 2
@@ -176,7 +236,7 @@ def render_viewmodel(ctx, vmodel_path, arms_rel, files_root=None, size=(960, 540
     R = np.array([[np.cos(a), -np.sin(a), 0], [np.sin(a), np.cos(a), 0], [0, 0, 1]])
     side_items = [((P_ - cen) @ R.T + np.array([ext * 1.6, 0, 0]), N_ @ R.T, uv_, tr_, tx_)
                   for P_, N_, uv_, tr_, tx_ in items]
-    side = raster(side_items, size, fov=40.0)
+    side = raster(side_items, size, fov=40.0, mats_list=ml)
     both = Image.new("RGB", (size[0] * 2, size[1]))
     both.paste(eye, (0, 0))
     both.paste(side, (size[0], 0))

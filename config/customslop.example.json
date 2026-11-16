@@ -33,6 +33,8 @@
  "vpk_exe": "<path to Valve's vpk.exe, e.g. <TF2 dedicated server>/bin/vpk.exe>",
  "gate_port": 27993,
  "gate_timeout": 60,
+ "renderer": "v2",
+ "of_dir": null,
  "card_reference_dir": null,
  "workdir": null
 }

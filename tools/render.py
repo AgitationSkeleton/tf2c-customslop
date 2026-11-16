@@ -49,7 +49,8 @@ def rot(yaw, pitch):
 
 
 def render(model, roots, size=512, ss=2, yaw=25.0, pitch=12.0, band=(0.92, 0.62), bodygroups=None,
-           muzzle_left=True, axis=None, textures=None):
+           muzzle_left=True, axis=None, textures=None, mats=None, v2=False):
+    """v2=True: Source-like shading (srcshade, materials from mats) + premultiplied box downsample."""
     m = model
     P = m.raw_pos.copy()
     N = m.raw_nrm.copy()
@@ -103,6 +104,11 @@ def render(model, roots, size=512, ss=2, yaw=25.0, pitch=12.0, band=(0.92, 0.62)
     zbuf = np.full((S_, S_), np.inf)
     col = np.zeros((S_, S_, 3))
     alpha = np.zeros((S_, S_))
+    nb = np.zeros((S_, S_, 3), np.float32)
+    ab = np.zeros((S_, S_, 3), np.float32)
+    bab = np.ones((S_, S_), np.float32)
+    uvb = np.zeros((S_, S_, 2), np.float32)
+    mb = np.full((S_, S_), -1, np.int32)
     texs = {}
     for k, tname in enumerate(m.textures):
         texs[k] = textures.get(k) if textures is not None else find_material(m, tname, roots)[1]
@@ -138,13 +144,20 @@ def render(model, roots, size=512, ss=2, yaw=25.0, pitch=12.0, band=(0.92, 0.62)
             zb[win] = z[win]
             n = (w0[..., None] * NN[a] + w1[..., None] * NN[b_] + w2[..., None] * NN[c])[win]
             n /= np.linalg.norm(n, axis=1, keepdims=True) + 1e-9
+            uv = (w0[..., None] * m.raw_uv[a] + w1[..., None] * m.raw_uv[b_] + w2[..., None] * m.raw_uv[c])[win]
+            ti_ = skin0[mat] if mat < len(skin0) else mat
             if tex is not None:
-                uv = (w0[..., None] * m.raw_uv[a] + w1[..., None] * m.raw_uv[b_] + w2[..., None] * m.raw_uv[c])[win]
                 tu = (np.mod(uv[:, 0], 1.0) * tw).astype(int).clip(0, tw - 1)
                 tv = (np.mod(uv[:, 1], 1.0) * th).astype(int).clip(0, th - 1)
                 albedo = tex[tv, tu, :3] / 255.0
+                if tex.shape[2] > 3:
+                    bab[y0:y1 + 1, x0:x1 + 1][win] = tex[tv, tu, 3] / 255.0
             else:
                 albedo = np.full((win.sum(), 3), 0.6)
+            nb[y0:y1 + 1, x0:x1 + 1][win] = n
+            ab[y0:y1 + 1, x0:x1 + 1][win] = albedo
+            uvb[y0:y1 + 1, x0:x1 + 1][win] = uv
+            mb[y0:y1 + 1, x0:x1 + 1][win] = ti_
             ndl1 = np.clip(n @ L1, 0, 1)
             ndl2 = np.clip(n @ L2, 0, 1)
             hl = (n @ L1) * 0.5 + 0.5                      # half-lambert like TF2 shading
@@ -156,6 +169,10 @@ def render(model, roots, size=512, ss=2, yaw=25.0, pitch=12.0, band=(0.92, 0.62)
             cb = col[y0:y1 + 1, x0:x1 + 1]
             cb[win] = np.clip(c_, 0, 1)
             alpha[y0:y1 + 1, x0:x1 + 1][win] = 1.0
+    if v2:
+        import srcshade as SS
+        c2 = SS.shade(nb, ab, bab, uvb, mb, alpha, mats)
+        return Image.fromarray(SS.downsample_premul(c2, alpha, ss), "RGBA")
     img = np.dstack([col * 255, alpha * 255]).astype(np.uint8)
     im = Image.fromarray(img, "RGBA")
     if ss > 1:

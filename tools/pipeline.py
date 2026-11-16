@@ -686,7 +686,8 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
             hand_ok = all(ok for k in g["hands"] for ok, _ in g["hands"][k].values())
             vm_img, bm = None, None
             if "v" in outs and int(donor["kv"].get("attach_to_hands") or 2) == 2:
-                vm_img, bm = VMR.render_viewmodel(ctx, outs["v"], arms_rel, files, size=(640, 360))
+                vm_img, bm = VMR.render_viewmodel(ctx, outs["v"], arms_rel, files, size=(640, 360),
+                                                  v2=ctx.cfg.get("renderer") == "v2")
                 g["arms_bonemerge"] = bm
             bm_ok = bm is None or bm["ok"]
             g["engine_ok"], g["hands_ok"], g["arms_ok"] = eng_ok, hand_ok, bm_ok
@@ -697,6 +698,10 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
             raise RuntimeError("gates failed after 3 attempts: %s" % {k: gate.get(k) for k in
                                ("structural", "engine_ok", "hands_ok", "arms_ok", "render_gate", "recolour_complete",
                                 "recolour_missing", "detail")})
+        if ctx.cfg.get("renderer") == "v2":
+            # the gates compared v1 renders; the saved previews use the v2 (Source-like) renderer
+            orig_img = render_with_fs(ctx, S.load(src_w or src_v), None, v2=True)
+            new_img = render_with_fs(ctx, S.load(outs.get("w") or outs["v"]), files, v2=True)
         orig_img.save(os.path.join(out_dir, "render_orig.png"))
         new_img.save(os.path.join(out_dir, "render.png"))
         if vm_img is not None:
@@ -713,8 +718,16 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
     icon.save(os.path.join(out_dir, "icon.png"))
     ip = os.path.join(files, "materials", "backpack", "customslop", tag + "_large.vtf")
     os.makedirs(os.path.dirname(ip), exist_ok=True)
-    small = icon.convert("RGBA").resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
-    open(ip, "wb").write(vtf.encode(np.asarray(small), fmt=15, mips=True))
+    if ctx.cfg.get("renderer") == "v2":
+        # crisp edges in game: premultiplied area resize, edge colour bled into transparent texels
+        # (no black fringe under bilinear filtering), premultiplied mips, uncompressed BGRA8888
+        import srcshade as SS_
+        rs = lambda im_, sz: SS_.bleed_edges(SS_.resize_premul(im_, sz))       # noqa: E731
+        small = rs(np.asarray(icon.convert("RGBA")), (ICON_SIZE, ICON_SIZE))
+        open(ip, "wb").write(vtf.encode(small, fmt=12, mips=True, resample=rs))
+    else:
+        small = icon.convert("RGBA").resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
+        open(ip, "wb").write(vtf.encode(np.asarray(small), fmt=15, mips=True))
     open(ip[:-4] + ".vmt", "w").write('"UnlitGeneric"\n{\n\t"$baseTexture" "backpack/customslop/%s_large"\n'
                                       '\t"$translucent" 1\n\t"$vertexcolor" 1\n\t"$ignorez" 1\n}\n' % tag)
     ok_icon, why_icon = VM.vtf_check(open(ip, "rb").read())
@@ -749,7 +762,7 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
         itn = typ
     level = rng.randint(1, 100)
     type_line = ctx.L.get("#ItemTypeDesc").replace("%s1", str(level)).replace("%s2", typ)
-    cimg = card.render_card(name, type_line, lines, icon, fonts=ctx.fonts)
+    cimg = card.render_card(name, type_line, lines, icon, fonts=ctx.fonts, crisp=ctx.cfg.get("renderer") == "v2")
     cimg.save(os.path.join(out_dir, "card.png"))
     # ---- schema fragment
     it = emit(defindex, name, desc, donor, slot, classes, attrs, mdir, tag, outs, snd, itn=itn)
@@ -785,22 +798,38 @@ def styled_icon(ctx, donor, fam, outs, files, fallback_img):
     import random as _r
     import fit_icons
     key = "%s:%s" % (donor["src"], donor["id"])
-    cp = IF.cache_path(key)
+    v2 = ctx.cfg.get("renderer") == "v2"
+    cp = IF.cache_path(key, 2 if v2 else 1)
     f = json.load(open(cp)) if os.path.exists(cp) else None
     saved, ctx.fs = ctx.fs, donor["fs"]
     try:
-        if f is None and fit_icons.stock_icon(ctx, donor) is not None:
-            _, f, _ = fit_icons.fit_donor(ctx, donor, _r.Random(7))
-        m = S.load(outs.get("w") or outs["v"])
+        if f is None:
+            if v2:
+                _, f, _ = fit_icons.fit_donor_v2(ctx, donor, _r.Random(7))
+            elif fit_icons.stock_icon(ctx, donor) is not None:
+                _, f, _ = fit_icons.fit_donor(ctx, donor, _r.Random(7))
+        use_v = v2 and (f or {}).get("model_kind") == "v" and outs.get("v")
+        m = S.load(outs["v"] if use_v else (outs.get("w") or outs["v"]))
+        if v2 and (use_v or not outs.get("w")):
+            m = IF.posed(m)                     # a v_ model is only assembled in its idle pose
         tex = VMR.textures_for(ctx, m, files)
+        mats = VMR.materials_for(ctx, m, files) if v2 else None
     finally:
         ctx.fs = saved
+    if f and v2 and f["scores"].get("iou_canvas", 1) < 0.6:
+        # the icon could not be matched (e.g. a nearest same-weapon icon of a different model):
+        # a clean side-on default camera beats a forced, odd pose
+        return IF.render_icon(m, tex, IF.default_style(m), mats=mats), dict(
+            style="default side-on camera (best icon fit IoU %.2f < 0.6: %s)" % (f["scores"]["iou_canvas"], f.get("icon_src")),
+            renderer="v2")
     if f:
-        return IF.render_icon(m, tex, f), dict(style="fitted to the donor's stock icon", scores=f["scores"])
+        return IF.render_icon(m, tex, f, mats=mats, legacy=not v2), dict(
+            style="fitted to the donor's own icon (%s)" % (f.get("icon_src") or "stock"), renderer="v2" if v2 else "v1",
+            scores=f["scores"])
     fs_ = IF.family_style(fam)
     st_ = IF.default_style(m, fs_["light"] if fs_ else None)
-    return IF.render_icon(m, tex, st_), dict(style="default camera + %s" % (
-        "mean fitted lighting of the %s family" % fam if fs_ else "default lighting"))
+    return IF.render_icon(m, tex, st_, mats=mats, legacy=not v2), dict(style="default camera + %s" % (
+        "mean fitted lighting of the %s family" % fam if fs_ else "default lighting"), renderer="v2" if v2 else "v1")
 
 
 def recolour_regions(ctx, src_path, model, files, matdir, assign, done):
@@ -878,7 +907,7 @@ def structural_ok(orig, new):
                               "vtx_bytes_identical"))
 
 
-def render_with_fs(ctx, model, files_root):
+def render_with_fs(ctx, model, files_root, v2=False):
     """Render resolving textures through files_root first (new materials), then the game VFS."""
     tex = {}
     for k, tname in enumerate(model.textures):
@@ -900,6 +929,8 @@ def render_with_fs(ctx, model, files_root):
                         img = vtf.decode(raw)[2]
                 break
         tex[k] = img
+    if v2:
+        return RD.render(model, [], size=512, ss=4, textures=tex, mats=VMR.materials_for(ctx, model, files_root), v2=True)
     return RD.render(model, [], size=512, ss=2, textures=tex)
 
 

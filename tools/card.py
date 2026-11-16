@@ -65,7 +65,7 @@ def wrap(text, font, width, draw):
     return out
 
 
-def render_card(name, type_line, lines, icon=None, width=560, scale=2, fonts=None, level=None):
+def render_card(name, type_line, lines, icon=None, width=560, scale=2, fonts=None, level=None, crisp=False):
     """name: item name (rendered uppercase); type_line: e.g. 'Level 15 Bat';
     lines: list of (text, role) with role in positive/negative/neutral; icon: PIL RGBA or None."""
     s = scale
@@ -99,7 +99,12 @@ def render_card(name, type_line, lines, icon=None, width=560, scale=2, fonts=Non
         if bb:
             ic = ic.crop(bb)
         k = min((box_w * 0.82) / ic.width, (box_h * 0.78) / ic.height)
-        ic = ic.resize((max(1, int(ic.width * k)), max(1, int(ic.height * k))), Image.LANCZOS)
+        if crisp:                                   # premultiplied area resize: no dark fringe
+            import numpy as _np
+            import srcshade as _SS
+            ic = Image.fromarray(_SS.resize_premul(_np.asarray(ic.convert("RGBA")), (max(1, int(ic.width * k)), max(1, int(ic.height * k)))), "RGBA")
+        else:
+            ic = ic.resize((max(1, int(ic.width * k)), max(1, int(ic.height * k))), Image.LANCZOS)
         img.alpha_composite(ic, (bx0 + (box_w - ic.width) // 2, top + (box_h - ic.height) // 2))
     y = y_name
     for nl in name_lines:
