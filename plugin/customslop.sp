@@ -28,7 +28,7 @@ public Plugin myinfo =
     name = "CustomSlop announcer",
     author = "Vio's Arcade",
     description = "Daily CustomSlop weapons: chat ad",
-    version = "0.3.0",
+    version = "0.3.1",
     url = "https://github.com/AgitationSkeleton/tf2c-customslop"
 };
 
@@ -48,7 +48,7 @@ public void OnConfigsExecuted()
 
 public void OnMapStart()
 {
-    char path[PLATFORM_MAX_PATH], line[PLATFORM_MAX_PATH];
+    char path[PLATFORM_MAX_PATH], line[PLATFORM_MAX_PATH], local[PLATFORM_MAX_PATH];
     BuildPath(Path_SM, path, sizeof(path), DL);
     File f = OpenFile(path, "r");
     if (f == null)
@@ -57,7 +57,10 @@ public void OnMapStart()
     while (!f.EndOfFile() && f.ReadLine(line, sizeof(line)))
     {
         TrimString(line);
-        if (line[0] && FileExists(line, true))
+        // apply installs every listed file under custom/00customslop/: a plain stat there, not a
+        // search of every game path and VPK (that tripped the script watchdog on a slow first boot)
+        FormatEx(local, sizeof(local), "custom/00customslop/%s", line);
+        if (line[0] && FileExists(local))
         {
             AddFileToDownloadsTable(line);
             n++;

@@ -33,6 +33,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import shutil
 import struct
 import subprocess
@@ -102,15 +103,33 @@ def pid_alive(pid):
 
 
 def srcds_running(server_root):
-    """True if a srcds process runs from this install (PowerShell CIM query; no rcon)."""
-    inst = os.path.dirname(os.path.abspath(server_root)).lower()
+    """True if a srcds process serves this game folder (PowerShell CIM query; no rcon).
+    Matches on the resolved -game folder, so another server started from the same install with a
+    different -game folder (e.g. tf2classified-3\\tf2classified) does not block; anything that
+    can't be resolved counts as running."""
+    root = os.path.normcase(os.path.abspath(server_root))
+    inst = os.path.normcase(os.path.dirname(root))
     try:
         out = subprocess.run(["powershell", "-NoProfile", "-Command",
                               "Get-CimInstance Win32_Process -Filter \"name like 'srcds%'\" | "
-                              "ForEach-Object { $_.ExecutablePath }"], capture_output=True, text=True, timeout=30).stdout
+                              "ForEach-Object { $_.ExecutablePath + [char]9 + $_.CommandLine }"],
+                             capture_output=True, text=True, timeout=30).stdout
     except Exception:
         return True                                   # cannot tell -> be safe, do not apply
-    return any(l.strip().lower().startswith(inst) for l in out.splitlines() if l.strip())
+    for line in out.splitlines():
+        exe, _, cmd = line.strip().partition("\t")
+        if not exe:
+            continue
+        exe_dir = os.path.normcase(os.path.dirname(exe))
+        m = re.search(r'-game\s+(?:"([^"]+)"|(\S+))', cmd)
+        if not m:
+            if exe_dir == inst:
+                return True
+            continue
+        game = m.group(1) or m.group(2)
+        if os.path.normcase(os.path.abspath(os.path.join(os.path.dirname(exe), game))) == root:
+            return True
+    return False
 
 
 def base_schema(server_root):
@@ -310,8 +329,16 @@ def apply(server_root, dry=False, fail_after=None, budget=180):
         base_rel, base_bytes = base_schema(server_root)
         merged = merge(base_bytes, sorted(live, key=lambda w: w["defindex"]), st, c)
         dl = "".join("%s\n" % p_ for w in sorted(live, key=lambda w: w["defindex"]) for p_ in w["assets"])
-        plan = {SCHEMA_VPK: None, LOOSE: merged, TODAY: today_cfg(live_new_for_ad(applied, live), c),
-                DOWNLOADS: dl.encode("utf-8")}
+        plan = {SCHEMA_VPK: None, LOOSE: merged, DOWNLOADS: dl.encode("utf-8")}
+        if applied:
+            # the chat ad changes only on a night that adds weapons; a night with nothing new keeps
+            # the last ad unless it names a weapon that is no longer live
+            plan[TODAY] = today_cfg(live_new_for_ad(applied, live), c)
+        else:
+            tp = os.path.join(server_root, TODAY)
+            old = open(tp, encoding="utf-8").read() if os.path.exists(tp) else ""
+            if not old or any(w["name"].replace('"', "'") in old for w in retire):
+                plan[TODAY] = today_cfg([], c)
         for w in live:
             for p in w["assets"]:
                 plan["%s/%s" % (ASSET_DIR, p)] = os.path.join(ROOT, w["dir"], "files", p)
