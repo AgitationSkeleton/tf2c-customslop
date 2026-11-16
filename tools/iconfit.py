@@ -50,6 +50,8 @@ def tri_list(m):
             continue
         ti = m.skins[0][mat] if m.skins and mat < len(m.skins[0]) else mat
         out.append((ti, t))
+    if not out:                 # bodypart vertex ranges don't match the strip indices: use everything
+        out = [(m.skins[0][mat] if m.skins and mat < len(m.skins[0]) else mat, t) for mat, t in m.tris if len(t)]
     return out
 
 
@@ -490,8 +492,8 @@ def fit_v2(m, icon_rgba, rng, icon_src=None, textures=None):
     """-> v2 fit dict: R, mirror, scale/centre framing so the donor's bbox lands on the icon's."""
     ia = icon_rgba[..., 3].astype(np.float32) / 255
     ibb = bbox(ia)
-    if ibb is None:
-        return None
+    if ibb is None or not tri_list(m):
+        return None                          # empty icon or no triangles in the default bodygroups
     s_iou, R, mir, D = fit_pose(m, icon_rgba, rng, textures=textures)
     Qd = m.raw_pos @ R.T
     pp = (D, float(Qd[:, 1].mean())) if D else None          # fixed per donor (mutations keep it)

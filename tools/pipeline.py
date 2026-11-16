@@ -805,7 +805,10 @@ def styled_icon(ctx, donor, fam, outs, files, fallback_img):
     try:
         if f is None:
             if v2:
-                _, f, _ = fit_icons.fit_donor_v2(ctx, donor, _r.Random(7))
+                try:
+                    _, f, _ = fit_icons.fit_donor_v2(ctx, donor, _r.Random(7))
+                except Exception:              # a failed camera fit must never fail the weapon
+                    f = None
             elif fit_icons.stock_icon(ctx, donor) is not None:
                 _, f, _ = fit_icons.fit_donor(ctx, donor, _r.Random(7))
         use_v = v2 and (f or {}).get("model_kind") == "v" and outs.get("v")
