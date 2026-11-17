@@ -114,9 +114,11 @@ def sanitize(it, src, classes):
             if isinstance(v, kv.KV) and [t.lower() for t, _ in v.pairs] == ["customslop"]:
                 out.add(k, v)                            # CustomSlop's own tag; donor tags never
             continue
-        if kl in ("item_logname", "item_iconname") and tf2cc:
+        # The kill icon is the donor's own (e.g. the OF rocket launcher's): keep item_iconname for
+        # every donor. The log name stays tf2cc-only.
+        if kl == "item_logname" and tf2cc:
             continue
-        if isinstance(v, str) and kl not in ("model_player", "model_world") and _TF2CC_REF.search(v):
+        if isinstance(v, str) and kl not in ("model_player", "model_world", "item_iconname") and _TF2CC_REF.search(v):
             continue
         out.add(k, v)
     return out
