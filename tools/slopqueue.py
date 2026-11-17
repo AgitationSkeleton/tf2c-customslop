@@ -120,7 +120,8 @@ def cmd_generate(a):
     c["_attr_registry"] = st.setdefault("attr_defs", {})
     c["_used_hues"] = st.setdefault("used_hues", [])
     ctx = pipeline.Ctx(c)
-    used = {w["name"].lower() for w in st["weapons"].values()}
+    import names
+    used = names.History.from_catalogue(st["weapons"], ROOT)   # names + descriptions ever made: never repeat/similar
     keep, gone = [], None
     if a.first_deploy and a.replace:
         old = json.load(open(os.path.join(QUEUE, "first_deploy.json")))["weapons"]

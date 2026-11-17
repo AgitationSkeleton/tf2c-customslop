@@ -613,12 +613,14 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
         for c2 in rng.sample(extra, min(len(extra), recipe.get("multi_n", 1))):
             classes[c2] = "1"
     attrs = roll_attributes(ctx, rng, fam, slot, recipe, donor["kv"].get("item_class"), list(classes))
-    name = names.make_name(rng, used_names)
+    ninfo = dict(item_class=donor["kv"].get("item_class"), fam=fam, slot=slot, classes=list(classes), attrs=attrs, wrong=wrong)
+    name = names.make_name(rng, used_names, ninfo)
     traits = [t for t, cond in (("self_ignite", any(a["cls"] == "customslop_ignite_self" for a in attrs)),
                                 ("odd_projectile", any(a["cls"] == "custom_projectile_model" for a in attrs)),
                                 ("wrong_class", bool(wrong))) if cond]
     projn = next((a["value"].split("/")[-1][:-4].replace("_", " ") for a in attrs if a["cls"] == "custom_projectile_model"), "")
-    desc = names.make_description(rng, traits, dict(proj=projn or "something", cls=wrong or "anyone"))
+    desc = names.make_description(rng, traits, dict(proj=projn or "something", cls=wrong or "anyone"),
+                                  used_names, ninfo, name)
     files = os.path.join(out_dir, "files")
     if os.path.exists(out_dir):
         shutil.rmtree(out_dir)
