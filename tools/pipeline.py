@@ -226,6 +226,8 @@ class Ctx:
                     it.get("model_world"), self.fs, CREDITS[src])
         tc_icons = {(it.get("model_player") or "").lower(): it.get("item_iconname") for k, it in tc.blocks()
                     if k.isdigit() and it.get("item_iconname")}
+        tc_names = {(it.get("model_player") or "").lower(): it.get("item_name") for k, it in tc.blocks()
+                    if k.isdigit() and it.get("item_name")}
         om = os.path.join(OLDMERC or "", "oldmerc_items.json")
         if os.path.exists(om):
             ofs = VFS.VFS([("dir", os.path.join(OLDMERC, "staging", "tf2classified"))] + VFS.DEFAULT_ORDER)
@@ -238,6 +240,9 @@ class Ctx:
                 okv = kv.KV([("attach_to_hands", "0" if "chainsaw" in x["model_player"] else "2")])
                 # kill icon: the one the CURRENT tf2cc base gives the item with this model (user: kill
                 # icons must match the donor model's own, e.g. tf2cc_merc_stengun_v1)
+                nm_ = x.get("item_name") or tc_names.get(x["model_player"].lower())
+                if nm_:
+                    okv.add("item_name", nm_)        # display name (item_type_name subtext)
                 ic_ = tc_icons.get(x["model_player"].lower())
                 if ic_:
                     okv.add("item_iconname", ic_)
@@ -631,6 +636,24 @@ def mesh_params(rng, recipe, attempt, coarse=False):
 
 
 # ---------------------------------------------------------------- the weapon
+def weapon_type(item_class):
+    """A weapon TYPE for variety rules: the item class (shovel/crowbar/lead pipe are all shovels)."""
+    return (item_class or "").lower()
+
+
+def pick_donor(rng, pool, recipe):
+    """Donor choice with variety (user: no same weapon type two nights in a row). Hard: no type from
+    the previous night's batch or already made tonight (recipe avoid_types). Soft: types used in the
+    last nights weigh less (recipe recent_types {type: weight factor}), and a slot already used
+    tonight weighs less (recipe taken_slots)."""
+    avoid = set(recipe.get("avoid_types") or ())
+    cand = [d for d in pool if weapon_type(d["kv"].get("item_class")) not in avoid] or list(pool)
+    recent = recipe.get("recent_types") or {}
+    slots = set(recipe.get("taken_slots") or ())
+    wts = [recent.get(weapon_type(d["kv"].get("item_class")), 1.0) * (0.35 if d["slot"] in slots else 1.0) for d in cand]
+    return cand[int(rng.choices(range(len(cand)), weights=wts)[0])]
+
+
 def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
     recipe = recipe or {}
     used_names = used_names if used_names is not None else set()
@@ -642,7 +665,7 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
         pool = [d for d in pool if d["slot"] == recipe["slot"]] or pool
     if recipe.get("need_world"):
         pool = [d for d in pool if d["mw"]] or pool
-    donor = rng.choice(pool)
+    donor = pick_donor(rng, pool, recipe)
     fam, slot = donor["fam"], donor["slot"]
     arms_ok = ctx.audit.get("%s:%s" % (donor["src"], donor["id"]), {}).get("arms") or {c: True for c in CLASSES}
     home = [c for c in donor["classes"] if c in CLASSES and arms_ok.get(c, True)] or         [c for c in CLASSES if arms_ok.get(c, True) and slot in CLASS_SLOTS[c]] or ["Soldier"]
@@ -804,8 +827,11 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
     lines.append((desc, "neutral"))
     # item_type_name: a token TF2C itself localises for this item class (labels.py), else a literal
     ic_ = donor["kv"].get("item_class", "")
-    itn = labels.type_token(ic_, slot, donor["src"], donor["kv"].get("item_type_name"), ctx.tf2c_tokens, ctx.stock_types)
-    if itn:
+    # the DONOR's own weapon name (user: "Hammerfists", "Assault Rifle", "Lead Pipe"), else the class token
+    itn = labels.donor_type_name(donor["src"], donor["kv"], ctx.tf2c_tokens) or         labels.type_token(ic_, slot, donor["src"], donor["kv"].get("item_type_name"), ctx.tf2c_tokens, ctx.stock_types)
+    if itn and not itn.startswith("#"):
+        typ = itn
+    elif itn:
         typ = ctx.tf2c_tokens[itn[1:].lower()]
     else:
         typ = TYPE_NAMES.get(ic_, re.sub(r"^tf2?c?_weapon_", "", ic_).replace("_", " ").title())

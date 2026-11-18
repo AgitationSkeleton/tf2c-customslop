@@ -1,3 +1,363 @@
 {
- "_doc": "Reviewed per-donor icon camera overrides for the v3 fit (iconfit.apply_override). Keys are donor keys (src:id). Fields: hard (bool, prior-free dense search), mirror (bool), turn180 (bool, rotate 180 deg about screen-up), roll_deg (float, in-plane roll), note (why). Every entry must say why; review with tools/audit_icons.py --compare 2,3."
+ "_doc": "Reviewed per-donor icon camera overrides for the v3 fit (iconfit.apply_override). Keys are donor keys (src:id). Fields: hard (bool, prior-free dense search), mirror (bool), turn180 (bool, rotate 180 deg about screen-up), roll_deg (float, in-plane roll), note (why). Every entry must say why; review with tools/audit_icons.py --compare 2,3.",
+ "tf2c:1": {
+  "R": [
+   [
+    0.3222415425341205,
+    0.6401514726210925,
+    0.6973997995169468
+   ],
+   [
+    0.6746406741206942,
+    0.36151072711446336,
+    -0.6435603740156376
+   ],
+   [
+    -0.6640936297595439,
+    0.6778761585143843,
+    -0.3153784466804528
+   ]
+  ],
+  "mirror": true,
+  "persp_d": null,
+  "iou": 0.61,
+  "source": "side_fit",
+  "note": "side-profile camera matched to tf2c materials/vgui/loadout/weapons/bottle (IoU 0.592 -> 0.61)"
+ },
+ "tf2c:6": {
+  "R": [
+   [
+    -0.4013360400997108,
+    -0.6894173986240191,
+    0.6030199278560984
+   ],
+   [
+    -0.032065058796265915,
+    -0.6473894075526089,
+    -0.7614845940615437
+   ],
+   [
+    0.9153694417673532,
+    -0.324947081019621,
+    0.2377144918076137
+   ]
+  ],
+  "mirror": false,
+  "persp_d": 292.1895289107163,
+  "iou": 0.925,
+  "source": "side_fit",
+  "note": "side-profile camera matched to tf2c materials/vgui/loadout/weapons/shovel (IoU 0.9 -> 0.925)"
+ },
+ "tf2c:35": {
+  "R": [
+   [
+    0.5778613983404162,
+    -0.6972211683827361,
+    -0.4242155662715254
+   ],
+   [
+    -0.6426896952027352,
+    -0.06838588753259038,
+    -0.7630683626429516
+   ],
+   [
+    0.5030170573532015,
+    0.7135867240534902,
+    -0.4876144247931288
+   ]
+  ],
+  "mirror": false,
+  "persp_d": 31.37905657320956,
+  "iou": 0.57,
+  "source": "side_fit",
+  "note": "side-profile camera matched to tf2c materials/vgui/loadout/weapons/blue/flare_gun_blue (IoU 0.69 -> 0.57)"
+ },
+ "of_merc:30113": {
+  "R": [
+   [
+    0.7324683524826352,
+    0.061070921194449485,
+    0.6780563805435619
+   ],
+   [
+    0.6508387267090142,
+    -0.35503178592475804,
+    -0.6710896980276675
+   ],
+   [
+    0.1997475016794035,
+    0.9328573168322893,
+    -0.29979686790441745
+   ]
+  ],
+  "mirror": true,
+  "persp_d": 60.81610120387459,
+  "iou": 0.614,
+  "source": "side_fit",
+  "note": "side-profile camera matched to Open Fortress materials/sprites/bucket_assaultrifle (IoU 0.602 -> 0.614)"
+ },
+ "tf2classic_beta:30203": {
+  "R": [
+   [
+    0.5350727112568427,
+    -0.5189276128550208,
+    0.6666418275842291
+   ],
+   [
+    0.6515977873996222,
+    -0.24874095387942632,
+    -0.7166228166330387
+   ],
+   [
+    0.5376964916420494,
+    0.8178276532862793,
+    0.2050375877640215
+   ]
+  ],
+  "mirror": false,
+  "persp_d": 150.19856568833666,
+  "iou": 0.655,
+  "source": "side_fit",
+  "note": "side-profile camera matched to nearest same-weapon icon: stock 5205 item 9 vgui/loadout/weapons/shotgun (IoU 0.752 -> 0.655)"
+ },
+ "tf2classic_beta:30210": {
+  "R": [
+   [
+    0.1807858709632142,
+    0.5569644829328194,
+    0.8106213873390276
+   ],
+   [
+    0.9674664623759549,
+    0.04761173969218505,
+    -0.24847890538482087
+   ],
+   [
+    -0.17698901954027338,
+    0.8291704812611583,
+    -0.530236928143742
+   ]
+  ],
+  "mirror": true,
+  "persp_d": 11.88498192229429,
+  "iou": 0.571,
+  "source": "side_fit",
+  "note": "side-profile camera matched to nearest same-weapon icon: stock 5205 item 24 vgui/loadout/weapons/revolver (IoU 0.694 -> 0.571)"
+ },
+ "tf2classic_beta:30212": {
+  "R": [
+   [
+    -0.7780163484203635,
+    0.002494059771692497,
+    -0.6282390796953807
+   ],
+   [
+    -0.5914126849201362,
+    0.3344541563501851,
+    0.7337380005258292
+   ],
+   [
+    0.2119471578158088,
+    0.9424087207607648,
+    -0.2587357828516563
+   ]
+  ],
+  "mirror": false,
+  "persp_d": null,
+  "iou": 0.565,
+  "source": "side_fit",
+  "note": "side-profile camera matched to nearest same-weapon icon: stock 5205 item 15 vgui/loadout/weapons/minigun (IoU 0.728 -> 0.565)"
+ },
+ "presplit:30220": {
+  "R": [
+   [
+    0.5778613983404162,
+    -0.6972211683827361,
+    -0.4242155662715254
+   ],
+   [
+    -0.6426896952027352,
+    -0.06838588753259038,
+    -0.7630683626429516
+   ],
+   [
+    0.5030170573532015,
+    0.7135867240534902,
+    -0.4876144247931288
+   ]
+  ],
+  "mirror": false,
+  "persp_d": 31.37905657320956,
+  "iou": 0.57,
+  "source": "side_fit",
+  "note": "side-profile camera matched to nearest same-weapon icon: stock 5205 item 35 vgui/loadout/weapons/blue/flare_gun_blue (IoU 0.69 -> 0.57)"
+ },
+ "presplit:30227": {
+  "R": [
+   [
+    0.6394328270412684,
+    0.19196605536226846,
+    0.7444962681509303
+   ],
+   [
+    -0.39261695699067456,
+    -0.7510254313177491,
+    0.5308603645002813
+   ],
+   [
+    0.6610428010238022,
+    -0.6317514029289043,
+    -0.4048611862255591
+   ]
+  ],
+  "mirror": true,
+  "persp_d": 13.265817369870096,
+  "iou": 0.531,
+  "source": "side_fit",
+  "note": "side-profile camera matched to nearest same-weapon icon: stock 5205 item 7 vgui/loadout/weapons/wrench (IoU 0.741 -> 0.531)"
+ },
+ "tf2classic_b4:90002": {
+  "R": [
+   [
+    0.6781128546571777,
+    0.12582698838623646,
+    -0.724106708532895
+   ],
+   [
+    -0.7113833878790704,
+    0.3599043504035018,
+    -0.6036576297955072
+   ],
+   [
+    0.18465273298380713,
+    0.9244654820783107,
+    0.3335669957404771
+   ]
+  ],
+  "mirror": false,
+  "persp_d": 83.20459935809767,
+  "iou": 0.943,
+  "source": "side_fit",
+  "note": "side-profile camera matched to tf2classic_b4 materials/backpack/weapons/c_models/c_fireaxe_pyro/c_fireaxe_pyro_large (IoU 0.671 -> 0.943)"
+ },
+ "tf2classic_b4:90006": {
+  "R": [
+   [
+    0.2620158971768014,
+    0.7902808236157227,
+    -0.5538988079531235
+   ],
+   [
+    -0.5766100514944269,
+    -0.3320425053369867,
+    -0.7465042686851373
+   ],
+   [
+    -0.7738659561850687,
+    0.5149796058824,
+    0.3686834514634165
+   ]
+  ],
+  "mirror": true,
+  "persp_d": 39.21701471578666,
+  "iou": 0.847,
+  "source": "side_fit",
+  "note": "side-profile camera matched to tf2classic_b4 materials/backpack/weapons/w_models/w_shovel_large (IoU 0.857 -> 0.847)"
+ },
+ "tf2classic_b4:90012": {
+  "R": [
+   [
+    -0.5475296829777463,
+    -0.7018823687991738,
+    0.4556011266745838
+   ],
+   [
+    -0.750949064349119,
+    0.6523534587949305,
+    0.10252057135752735
+   ],
+   [
+    -0.3691703522920978,
+    -0.2860001838585985,
+    -0.8842607906163071
+   ]
+  ],
+  "mirror": false,
+  "persp_d": 27.115168770277634,
+  "iou": 0.555,
+  "source": "side_fit",
+  "note": "side-profile camera matched to nearest same-weapon icon: stock 5205 item 9 vgui/loadout/weapons/shotgun (IoU 0.644 -> 0.555)"
+ },
+ "tf2classic_b4:99014": {
+  "R": [
+   [
+    0.7088302206595591,
+    -0.5853853422187251,
+    0.3935526894777712
+   ],
+   [
+    -0.6588486856130666,
+    -0.748728155544553,
+    0.07296957284229112
+   ],
+   [
+    0.25194866093245105,
+    -0.311014710601152,
+    -0.9164015070066321
+   ]
+  ],
+  "mirror": false,
+  "persp_d": 54.8148833348154,
+  "iou": 0.568,
+  "source": "side_fit",
+  "note": "side-profile camera matched to tf2classic_b4 materials/backpack/weapons/w_models/w_minigun_large (IoU 0.709 -> 0.568)"
+ },
+ "tf2classic_b4:99015": {
+  "R": [
+   [
+    0.5334784033658866,
+    0.19360670523377346,
+    -0.8233572959722332
+   ],
+   [
+    -0.8250062269024827,
+    0.33370100490746557,
+    -0.45607934057121774
+   ],
+   [
+    0.18645513861064222,
+    0.9225833745587824,
+    0.33774901668756313
+   ]
+  ],
+  "mirror": true,
+  "persp_d": 4.402335043785125,
+  "iou": 0.679,
+  "source": "side_fit",
+  "note": "side-profile camera matched to tf2classic_b4 materials/backpack/weapons/w_models/w_grenadelauncher_large (IoU 0.658 -> 0.679)"
+ },
+ "tf2classic_b4:99019": {
+  "R": [
+   [
+    -0.7340752999495856,
+    -0.10987315461642898,
+    -0.6701203950773027
+   ],
+   [
+    0.2920023729163657,
+    -0.9420037634204166,
+    -0.1654192368286823
+   ],
+   [
+    -0.613080800722986,
+    -0.31710692139467145,
+    0.7235849170542848
+   ]
+  ],
+  "mirror": false,
+  "persp_d": 26.083262708866695,
+  "iou": 0.686,
+  "source": "side_fit",
+  "note": "side-profile camera matched to tf2classic_b4 materials/backpack/weapons/w_models/w_shovel_large (IoU 0.723 -> 0.686)"
+ }
 }

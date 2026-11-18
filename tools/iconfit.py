@@ -572,8 +572,14 @@ def fit_v2(m, icon_rgba, rng, icon_src=None, textures=None, v3=False, mats=None,
     ibb = bbox(ia)
     if ibb is None or not tri_list(m):
         return None                          # empty icon or no triangles in the default bodygroups
-    s_iou, R, mir, D = fit_pose(m, icon_rgba, rng, textures=textures, v3=v3, mats=mats, hard=hard)
-    if override:
+    if override and override.get("R"):
+        # reviewed explicit camera (tools/icon_overrides.json): no fitting, only framing to the icon
+        R, mir = np.array(override["R"], float), bool(override.get("mirror", False))
+        D = override.get("persp_d")
+        s_iou = float(override.get("iou", 0.0))
+    else:
+        s_iou, R, mir, D = fit_pose(m, icon_rgba, rng, textures=textures, v3=v3, mats=mats, hard=hard)
+    if override and not override.get("R"):
         f_ = apply_override(dict(R=R.tolist(), mirror=mir), override)
         R, mir = np.array(f_["R"]), f_["mirror"]
     Qd = m.raw_pos @ R.T

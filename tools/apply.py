@@ -231,7 +231,29 @@ def strip_sounds(text):
     return text
 
 
-def merge(base_bytes, live, st, c):
+def pending_unpublished(w):
+    """A re-rendered icon's files that are not verified on FastDL yet (tools/reicon.py)."""
+    pub = {r["path"] for r in w.get("published_blobs", [])}
+    return {a for a in (w.get("icon_pending") or [])
+            if not any(x == a + ".bz2" or x.endswith("/" + a + ".bz2") for x in pub)}
+
+
+def item_text(w, c, for_publish=False):
+    """A weapon's schema fragment. A re-rendered icon ships under a NEW path (tools/reicon.py) whose
+    files are published to FastDL at 02:00; until they are verified there (published_blobs), the
+    server keeps the previous fragment (item.txt.pre_reicon) so clients never see a missing icon.
+    Publishing itself always uses the new fragment (it ships the files in the same commit)."""
+    d = os.path.join(ROOT, w["dir"])
+    path = os.path.join(d, "item.txt")
+    prev = path + ".pre_reicon"
+    if not for_publish and w.get("icon_pending") and os.path.exists(prev):
+        pub = {r["path"] for r in w.get("published_blobs", [])}
+        if pending_unpublished(w):
+            return open(prev, encoding="utf-8").read()
+    return open(path, encoding="utf-8").read()
+
+
+def merge(base_bytes, live, st, c, for_publish=False):
     """Byte-preserving merge: the base text is kept verbatim except that blocks in CustomSlop's own
     defindex range are cut out; CustomSlop's items/attributes are inserted before the closing brace
     of the items / attributes sections. Proof check: removing exactly the inserted spans from the
@@ -239,7 +261,7 @@ def merge(base_bytes, live, st, c):
     text = cut_own(base_bytes.decode("utf-8", errors="replace"), c)
     stripped = text
     secs, _ = _blocks(text)
-    frag_items = "".join(open(os.path.join(ROOT, w["dir"], "item.txt"), encoding="utf-8").read() for w in live)
+    frag_items = "".join(item_text(w, c, for_publish) for w in live)
     frag_attrs = Q.attribute_block(st)
     # 5205 rejects the WHOLE custom schema on one bad attribute: re-check every CustomSlop item
     import validate_model as VM
@@ -388,7 +410,8 @@ def apply(server_root, dry=False, fail_after=None, budget=180, verify_only=False
             log("base %s changed since the last apply (%s -> %s): re-merging on the installed base"
                 % (base_rel, prev["base_vpk_sha1"][:12], base_sha[:12]))
         merged = merge(base_bytes, sorted(live, key=lambda w: w["defindex"]), st, c)
-        dl = "".join("%s\n" % p_ for w in sorted(live, key=lambda w: w["defindex"]) for p_ in w["assets"])
+        dl = "".join("%s\n" % p_ for w in sorted(live, key=lambda w: w["defindex"]) for p_ in w["assets"]
+                     if p_ not in pending_unpublished(w))         # never offer a file FastDL doesn't have yet
         plan = {SCHEMA_VPK: None, LOOSE: merged, DOWNLOADS: dl.encode("utf-8")}
         if applied:
             # the chat ad changes only on a night that adds weapons; a night with nothing new keeps
@@ -401,7 +424,8 @@ def apply(server_root, dry=False, fail_after=None, budget=180, verify_only=False
                 plan[TODAY] = today_cfg([], c)
         for w in live:
             for p in w["assets"]:
-                plan["%s/%s" % (ASSET_DIR, p)] = os.path.join(ROOT, w["dir"], "files", p)
+                if p not in pending_unpublished(w):
+                    plan["%s/%s" % (ASSET_DIR, p)] = os.path.join(ROOT, w["dir"], "files", p)
         removals = ["%s/%s" % (ASSET_DIR, p) for w in retire for p in w["assets"]]
         log("plan: base %s, live %d (new %d), retire %d, files %d, removals %d, schema %d bytes"
             % (base_rel, len(live), len(applied), len(retire), len(plan), len(removals), len(merged)))

@@ -43,7 +43,13 @@ def relabel(w, tokens, stock, ctx=None):
         P.TYPE_NAMES.get(ic, P.re.sub(r"^tf2?c?_weapon_", "", ic).replace("_", " ").title())
     it = kv.KV([(k, itn if k.lower() == "item_type_name" else v) for k, v in it.pairs])
     it = labels.sanitize(it, src, list(w["classes"]))
-    if ctx is not None:
+    if ctx is not None and getattr(ctx, "_typename", False):
+        sb = json.load(open(os.path.join(d, "summary.json")))["base"]
+        dn = next((x for x in ctx.donors if x["src"] == sb["src"] and x["id"] == sb["id"]), None)
+        tn = labels.donor_type_name(dn["src"], dn["kv"], tokens) if dn else None
+        if tn and it.get("item_type_name") != tn:
+            it = kv.KV([(k, tn if k.lower() == "item_type_name" else v) for k, v in it.pairs])
+    if ctx is not None and getattr(ctx, "_iconname", True):
         ic = donor_icon(ctx, json.load(open(os.path.join(d, "summary.json")))["base"])
         if ic and it.get("item_iconname") != ic:
             pairs = [(k, v) for k, v in it.pairs if k.lower() != "item_iconname"]
@@ -57,21 +63,52 @@ def relabel(w, tokens, stock, ctx=None):
     return path, old, new
 
 
+def recard(ctx, w, item_text, tokens):
+    """New type line on the card (and summary.json): 'Level N <donor weapon name>'."""
+    import re
+    from PIL import Image
+    d = os.path.join(ROOT, w["dir"])
+    it = kv.parse(item_text)[0].pairs[0][1]
+    itn = it.get("item_type_name") or ""
+    typ = tokens.get(itn[1:].lower(), itn) if itn.startswith("#") else itn
+    sp = os.path.join(d, "summary.json")
+    summ = json.load(open(sp))
+    lvl = re.search(r"\d+", summ.get("type_line") or "")
+    type_line = ctx.L.get("#ItemTypeDesc").replace("%s1", lvl.group(0) if lvl else "1").replace("%s2", typ)
+    if summ.get("type_line") == type_line:
+        return
+    if not os.path.exists(sp + ".pre_typename"):
+        shutil.copyfile(sp, sp + ".pre_typename")
+    summ["type_line"] = type_line
+    json.dump(summ, open(sp, "w"), indent=1, default=str)
+    cp = os.path.join(d, "card.png")
+    if os.path.exists(cp) and not os.path.exists(cp + ".pre_typename"):
+        shutil.copyfile(cp, cp + ".pre_typename")
+    at = it.get("attributes")
+    lines = P.attrdesc.sort_lines(P.attrdesc.item_lines([(n, b.get("value")) for n, b in at.blocks()], ctx.defs, ctx.L))
+    lines.append((it.get("item_description") or "", "neutral"))
+    icon = Image.open(os.path.join(d, "icon.png")) if os.path.exists(os.path.join(d, "icon.png")) else None
+    P.card.render_card(it.get("item_name"), type_line, lines, icon, fonts=ctx.fonts,
+                       crisp=ctx.cfg.get("renderer") == "v2").save(cp)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ids", type=int, nargs="*")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--iconname", action="store_true", help="also set item_iconname to the donor's current kill icon")
+    ap.add_argument("--typename", action="store_true", help="item_type_name = the donor weapon's own name; re-render the card")
     a = ap.parse_args()
     c = Q.cfg()
     st = Q.load_state(c)
     tokens = labels.tf2c_tokens(c["server_root"])
     stock = labels.stock_types(load_schema(BASE_SCHEMA), tokens)
     ctx = None
-    if a.iconname:
+    if a.iconname or a.typename:
         c2 = dict(c)
         c2["_attr_registry"], c2["_used_hues"] = {}, []
         ctx = P.Ctx(c2)
+        ctx._typename, ctx._iconname = a.typename, a.iconname
     changed = []
     for k, w in sorted(st["weapons"].items()):
         if w["status"] not in ("approved", "live") or (a.ids and w["defindex"] not in a.ids):
@@ -87,8 +124,10 @@ def main():
             if not os.path.exists(bak):
                 shutil.copyfile(path, bak)
             open(path, "w", encoding="utf-8", newline="\n").write(new)
+            if a.typename:
+                recard(ctx, w, new, tokens)
     if changed and not a.dry_run:
-        Q.journal(st, "relabel", ids=changed, iconname=bool(a.iconname))
+        Q.journal(st, "relabel", ids=changed, iconname=bool(a.iconname), typename=bool(a.typename))
         Q.save_state(st)
 
 

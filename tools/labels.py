@@ -78,6 +78,36 @@ def type_token(item_class, slot, src, donor_itn, tokens, stock):
     return None
 
 
+def donor_type_name(src, dkv, tokens):
+    """The DONOR weapon's own display name for item_type_name (user: the subtext should read
+    "Hammerfists" / "Assault Rifle" / "Lead Pipe", not the generic class name): a TF2C-localised
+    token when it resolves, else a literal; None when the donor has no usable name."""
+    cands = []
+    nm = dkv.get("name")
+    if src.startswith("tf2classic") and isinstance(nm, str) and " " in nm.strip() or (
+            isinstance(nm, str) and src.startswith("tf2classic") and nm[:1].isupper() and nm[1:2].islower()):
+        cands.append(nm)                                      # b4 "name" is the display name
+    cands.append(dkv.get("item_name"))
+    for n in cands:
+        if not isinstance(n, str) or not n.strip():
+            continue
+        n = re.sub(r"\s*\((presplit|beta|beta \d|b\d|4rdm|4dm|old|classic)\)\s*$", "", n.strip(), flags=re.I)
+        if n.startswith("#"):
+            if n[1:].lower() in tokens:
+                txt = tokens[n[1:].lower()]
+                if not _MERC_WORD.search(txt) and not txt.strip().startswith("%"):
+                    return n
+                continue
+            stem = re.sub(r"^#?TF_(Weapon_|Unique_)?", "", n[1:] if n.startswith("#") else n, flags=re.I)
+            n = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", stem).replace("_", " ").strip()
+            if not n or n.isupper():
+                continue
+        if _MERC_WORD.search(n) or n.upper().startswith(("TF_", "CARD:", "SET BONUS")):
+            continue
+        return n
+    return None
+
+
 def _is_merc(classes):
     return any(str(c).lower() in ("mercenary", "merc") for c in classes)
 

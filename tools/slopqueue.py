@@ -113,6 +113,32 @@ FIRST_RECIPES = [   # first deployment: three ordinary (not test-extreme) weapon
 ]
 
 
+def weapon_type_of(w):
+    b = w.get("base")
+    if isinstance(b, str):
+        try:
+            b = __import__("ast").literal_eval(b)
+        except Exception:
+            b = {}
+    return ((b or {}).get("item_class") or "").lower()
+
+
+def type_history(st, today, nights=5):
+    """(types of the previous night's batch, {type: weight factor} for the last `nights` batches).
+    A batch = the weapons created on one date (any status except rejected); the newest weighs most."""
+    by_date = {}
+    for w in st["weapons"].values():
+        if w.get("created") and w["created"] < today and w.get("status") != "rejected":
+            by_date.setdefault(w["created"], set()).add(weapon_type_of(w))
+    dates = sorted(by_date, reverse=True)[:nights]
+    prev = by_date[dates[0]] if dates else set()
+    recent = {}
+    for i, dte in enumerate(dates):
+        for t in by_date[dte]:
+            recent[t] = recent.get(t, 1.0) * (0.25 + 0.15 * i)       # 0.25 last night ... 0.85 five nights ago
+    return prev, recent
+
+
 def cmd_generate(a):
     import pipeline
     c = cfg()
@@ -142,6 +168,8 @@ def cmd_generate(a):
     seed = a.seed if a.seed is not None else int(dt.datetime.now().strftime("%Y%m%d%H"))
     rng = random.Random(seed)
     taken_classes = {c_ for w in keep for c_ in w["classes"]}
+    prev_types, recent_types = type_history(st, dt.date.today().isoformat())
+    taken_types, taken_slots = set(), set()
     made = []
     for r in recipes:
         for attempt in range(10):
@@ -149,7 +177,9 @@ def cmd_generate(a):
             save_state(st)                                   # reservation persists before any work
             out = os.path.join(QUEUE, "pending", str(di))
             try:
-                s = pipeline.make_weapon(ctx, di, rng, out, dict(r, avoid_classes=sorted(taken_classes)), used)
+                s = pipeline.make_weapon(ctx, di, rng, out, dict(
+                    r, avoid_classes=sorted(taken_classes), avoid_types=sorted(prev_types | taken_types),
+                    recent_types=recent_types, taken_slots=sorted(taken_slots)), used)
                 g = s["gate"] or {}
                 if not (g.get("structural") and g.get("render_gate")) or g.get("fallback"):
                     raise RuntimeError("gate not passed cleanly: %s" % g)
@@ -167,6 +197,8 @@ def cmd_generate(a):
         if s is None:
             continue
         taken_classes |= set(s["classes"])
+        taken_types.add(pipeline.weapon_type(s["base"].get("item_class") if isinstance(s.get("base"), dict) else None))
+        taken_slots.add(s["slot"])
         made.append(di)
         st["attr_defs"] = ctx.attr_registry
         st["used_hues"] += [[dt.date.today().isoformat(), h] for h in s["colours"]["hues"]]

@@ -84,7 +84,7 @@ def shared_files(repo, head, st, c):
         old = bz2.decompress(old_bz)
         items = path.endswith("custom_items_game.txt.bz2")
         if items:
-            new = A.merge(base_items, sorted(live, key=lambda w: w["defindex"]), st, c)
+            new = A.merge(base_items, sorted(live, key=lambda w: w["defindex"]), st, c, for_publish=True)
             base_rest = A.cut_own(base_items.decode("utf-8", errors="replace"), c)
             new_rest = A.strip_marked(new.decode("utf-8", errors="replace"))
             old_rest = A.cut_own(A.strip_marked(old.decode("utf-8", errors="replace")), c)
@@ -132,6 +132,14 @@ def plan(st, c):
         if w["status"] in ("approved", "live") and not w.get("published"):
             for rel in w["assets"]:
                 adds.append(dict(defindex=w["defindex"], path=c["fastdl_prefix"] + rel + ".bz2", src=os.path.join(d, rel)))
+        elif w["status"] in ("approved", "live"):
+            # assets a live weapon gained after its first publish (e.g. a re-rendered icon under a new
+            # versioned path: clients never re-download an existing path)
+            pub = {r["path"] for r in w.get("published_blobs", [])}
+            for rel in w["assets"]:
+                path = c["fastdl_prefix"] + rel + ".bz2"
+                if path not in pub:
+                    adds.append(dict(defindex=w["defindex"], path=path, src=os.path.join(d, rel)))
         if w["status"] == "retired" and w.get("published") and not w.get("unpublished"):
             for rec in w.get("published_blobs", []):
                 dels.append(dict(defindex=w["defindex"], path=rec["path"], sha=rec["sha"]))
@@ -299,7 +307,9 @@ def main():
         mine = [b for b in todo if b["defindex"] == w["defindex"]]
         if mine:
             w["published"] = True
-            w["published_blobs"] = [dict(path=b["path"], sha=b["sha"]) for b in mine]
+            known = {r["path"] for r in w.get("published_blobs", [])}
+            w["published_blobs"] = w.get("published_blobs", []) + [dict(path=b["path"], sha=b["sha"]) for b in mine
+                                                                   if b["path"] not in known]   # old files stay catalogued
         if any(d["defindex"] == w["defindex"] for d in deletions):
             w["unpublished"] = True
     Q.journal(st, "fastdl_verified", commit=commit["sha"])
