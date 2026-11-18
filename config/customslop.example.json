@@ -34,6 +34,9 @@
  "gate_port": 27993,
  "gate_timeout": 60,
  "renderer": "v2",
+ "icon_fit_version": 3,
+ "comedy_share": 0.0,
+ "vscript_installed": false,
  "of_dir": null,
  "card_reference_dir": null,
  "workdir": null

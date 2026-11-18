@@ -48,6 +48,7 @@ import vmrender as VMR  # noqa: E402
 import iconfit as IF  # noqa: E402
 import labels  # noqa: E402
 import relevance  # noqa: E402
+import attrscope  # noqa: E402
 from generate import (CLASSES, CLASS_SLOTS, FAMILY, CLIPLESS, BASE_SCHEMA, AF_SCHEMA, load_schema)  # noqa: E402
 
 POOL = os.path.join(ROOT, "analysis", "attribute_pool_5205.json")
@@ -66,7 +67,9 @@ ENGINE_TEST_EXCLUDED = {"tf2c_weapon_nailgun": "server keeps the stock v_nailgun
                                                "not used) - engine-load test 2026-11-16"}
 # individual donors excluded after review
 DONOR_EXCLUDED = {"tf2classic_b4:90001": "translucent glass material + overlapping UV tiles: region recolour produces "
-                                         "stripes and the look can't be verified offline (first-batch review 2026-11-16)"}
+                                         "stripes and the look can't be verified offline (first-batch review 2026-11-16)",
+                 "tf2classic_beta:30206": "tf2cc removed the 4rdm lead pipe (user decision 2026-11-16; OF has one)",
+                 "tf2classic_beta:30223": "tf2cc removed the 4rdm Merc Twin Barrel copy (user decision 2026-11-16)"}
 ITEM_CLASS_MAP = {"tf_weapon_smg_primary": "tf_weapon_smg", "tf_weapon_revolver_secondary": "tf_weapon_revolver",
                   "tf_weapon_heavyartillery": "tf_weapon_smg", "tf_weapon_hunterrifle": "tf_weapon_sniperrifle",
                   "tf_weapon_umbrella": "tf2c_weapon_umbrella", "tf_weapon_shotgun_soldier": "tf_weapon_shotgun",
@@ -88,6 +91,24 @@ TYPE_NAMES = {"tf_weapon_pipebomblauncher": "Stickybomb Launcher", "tf_weapon_gr
 ICON_SIZE = 256        # loadout/HUD icon texture (rendered at 512, downsampled; the panel scales it)
 
 
+def known_killicons(fs, server_root):
+    """Kill-icon names the 5205 client can draw: deathnotice SVGs in the game VPKs, in the server's
+    resource/ folder, and those a server plugin downloads (addons/sourcemod/configs/*/downloads*.txt)."""
+    import glob
+    names = set()
+    for kind, path in VFS.DEFAULT_ORDER:
+        if kind == "vpk" and os.path.exists(path):
+            names |= {os.path.basename(n)[:-4].lower() for n in VFS.VPK(path).ents
+                      if n.startswith("resource/svgs/deathnotice/") and n.endswith(".svg")}
+    if server_root:
+        for dp, _, fs_ in os.walk(os.path.join(server_root, "resource", "svgs", "deathnotice")):
+            names |= {f[:-4].lower() for f in fs_ if f.endswith(".svg")}
+        for p in glob.glob(os.path.join(server_root, "addons", "sourcemod", "configs", "*", "downloads*.txt")):
+            names |= {m.lower() for m in re.findall(r"resource/svgs/deathnotice/([^/\s]+)\.svg",
+                                                   open(p, encoding="utf-8", errors="replace").read())}
+    return names
+
+
 class Ctx:
     """Shared, loaded once: VFS, localisation, attribute pool, schema defs, donors, fonts."""
 
@@ -105,12 +126,23 @@ class Ctx:
         self.fonts = card.find_fonts(cfg.get("fonts_dir"))
         self.proj_models = [m for m in json.load(open(PROJ_MODELS)) if "skybox" not in m and "/effects/" not in m]
         self.donors = self._donors()
+        # kill icons: keep a donor's item_iconname only if the client can draw it (TF2C 5205 death
+        # notices are resource/svgs/deathnotice/<name>.svg: stock ones + those tf2cc downloads)
+        self.killicons = known_killicons(self.fs, cfg.get("server_root"))
+        for d in self.donors:
+            ic = d["kv"].get("item_iconname")
+            if ic and ic.lower() not in self.killicons:
+                d["kv"] = kv.KV([(k, v) for k, v in d["kv"].pairs if k.lower() != "item_iconname"])
         self.audit = {}
         ap = os.path.join(ROOT, "cache", "donor_audit.json")
         if audit and os.path.exists(ap):
             self.audit = json.load(open(ap))
             self.donors = [d for d in self.donors if self.audit.get("%s:%s" % (d["src"], d["id"]), {}).get("ok", True)]
         self.sounds = sounds_mod.Picker()
+        try:
+            self.attr_scope, self.attr_links = attrscope.load()
+        except Exception:                # no scope analysis: no gate (tools/attrscope.py builds it)
+            self.attr_scope, self.attr_links = None, {}
         cat_p = os.path.join(os.path.dirname(POOL), "attributes_5205.json")
         self.attr_cat = {r["id"]: r for r in json.load(open(cat_p))} if os.path.exists(cat_p) else {}
         # item_type_name tokens must resolve in TF2C's OWN localisation (not TF2's): labels.py
@@ -192,6 +224,8 @@ class Ctx:
                 src = "marxvee" if int(k) >= 30150 else "of_merc"
                 add(src, int(k), it, it.get("item_class") or "", it.get("item_slot"), [], it.get("model_player"),
                     it.get("model_world"), self.fs, CREDITS[src])
+        tc_icons = {(it.get("model_player") or "").lower(): it.get("item_iconname") for k, it in tc.blocks()
+                    if k.isdigit() and it.get("item_iconname")}
         om = os.path.join(OLDMERC or "", "oldmerc_items.json")
         if os.path.exists(om):
             ofs = VFS.VFS([("dir", os.path.join(OLDMERC, "staging", "tf2classified"))] + VFS.DEFAULT_ORDER)
@@ -202,6 +236,11 @@ class Ctx:
                 # chainsaw (hands baked in, 0). Without this key 5205 keeps the base weapon's model
                 # (caught by the engine-load test).
                 okv = kv.KV([("attach_to_hands", "0" if "chainsaw" in x["model_player"] else "2")])
+                # kill icon: the one the CURRENT tf2cc base gives the item with this model (user: kill
+                # icons must match the donor model's own, e.g. tf2cc_merc_stengun_v1)
+                ic_ = tc_icons.get(x["model_player"].lower())
+                if ic_:
+                    okv.add("item_iconname", ic_)
                 add(src, x["id"], okv, x.get("base") or "", x.get("slot"), [], x["model_player"], x.get("model_world"),
                     ofs, CREDITS[src])
         if B4 and os.path.isdir(B4):
@@ -348,7 +387,8 @@ def finish_attributes(ctx, rng, chosen, fam, recipe, mild=False, big=()):
 
 
 # relevance-aware roller (v2): most stats do something on THIS weapon for THIS class
-COMEDY_P = 0.30          # share of weapons with one deliberately irrelevant ("comedy") stat
+COMEDY_P = 0.0           # comedy stats (deliberately irrelevant = do nothing) are off: user, 2026-11-17
+#                          ("a lot of customslop attributes flat-out dont work"); config comedy_share
 BIG_SWING_P = 0.12       # per-attribute chance of a big value swing
 CORE = re.compile(r"^(mult_dmg|mult_postfiredelay|mult_clipsize|mult_reload_time|mult_player_movespeed|add_maxhealth|"
                   r"mult_maxammo|mult_spread_scale|mult_projectile_speed|mult_explosion_radius|mult_bullets_per_shot|"
@@ -366,10 +406,18 @@ def roll_attributes(ctx, rng, fam, slot, recipe, item_class=None, classes=()):
     classes = list(classes)
     prov = relevance.provides(item_class or "", fam, classes, slot)
     want = recipe.get("n_attr") or rng.choices([3, 4, 5, 6], weights=[3, 4, 3, 1])[0]
-    comedy = 1 if recipe.get("comedy", rng.random() < COMEDY_P) else 0
+    comedy = 1 if recipe.get("comedy", rng.random() < float(ctx.cfg.get("comedy_share", COMEDY_P))) else 0
     cands = [p for p in ctx.pool if not p["cls"].startswith(("override_projectile_type", "custom_projectile_model"))]
+    # 5205 source gate (attrscope.py): only attributes read on THIS weapon or on the ACTIVE weapon
+    # (never on the player: those act on every weapon and persist across switches and lives), and
+    # actually read for this item class; CustomSlop's VScript effects only if the VScript is installed
+    if ctx.attr_scope is not None:
+        cands = [p for p in cands if (p.get("vscript") and ctx.cfg.get("vscript_installed"))
+                 or attrscope.works_on(ctx.attr_scope.get(p["cls"]), item_class, ctx.attr_links)]
     nd = {id(p): relevance.needs(p, ctx.attr_cat) for p in cands}
     rel = [p for p in cands if nd[id(p)] in prov]
+    if len(rel) < 8:                     # relevance tags too narrow for this class: the source gate rules
+        rel = [p for p in cands if nd[id(p)] not in ("none", "unknown")] or list(cands)
     visible = lambda p: not p["hidden"] and p.get("desc_text")          # noqa: E731
     chosen, used = [], set()
 
@@ -801,14 +849,15 @@ def styled_icon(ctx, donor, fam, outs, files, fallback_img):
     import fit_icons
     key = "%s:%s" % (donor["src"], donor["id"])
     v2 = ctx.cfg.get("renderer") == "v2"
-    cp = IF.cache_path(key, 2 if v2 else 1)
+    fver = int(ctx.cfg.get("icon_fit_version", 2)) if v2 else 1      # camera fit cache version (v3: audited)
+    cp = IF.cache_path(key, fver)
     f = json.load(open(cp)) if os.path.exists(cp) else None
     saved, ctx.fs = ctx.fs, donor["fs"]
     try:
         if f is None:
             if v2:
                 try:
-                    _, f, _ = fit_icons.fit_donor_v2(ctx, donor, _r.Random(7))
+                    _, f, _ = fit_icons.fit_donor_v2(ctx, donor, _r.Random(7), version=fver)
                 except Exception:              # a failed camera fit must never fail the weapon
                     f = None
             elif fit_icons.stock_icon(ctx, donor) is not None:
@@ -821,7 +870,7 @@ def styled_icon(ctx, donor, fam, outs, files, fallback_img):
         mats = VMR.materials_for(ctx, m, files) if v2 else None
     finally:
         ctx.fs = saved
-    if f and v2 and f["scores"].get("iou_canvas", 1) < 0.6:
+    if f and v2 and f["scores"].get("iou_canvas", 1) < (0.6 if fver < 3 else 0.4):
         # the icon could not be matched (e.g. a nearest same-weapon icon of a different model):
         # a clean side-on default camera beats a forced, odd pose
         return IF.render_icon(m, tex, IF.default_style(m), mats=mats), dict(

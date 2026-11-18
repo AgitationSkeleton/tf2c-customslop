@@ -151,7 +151,7 @@ def label_check(fragment_text, tokens):
         for path, v in _walk(it):
             if path[-1].lower() in MERC_STATIC:
                 errs.append("%s: Merc-only static attr %s" % (k, path[-1]))
-            elif _TF2CC_REF.search(str(v)) and path[-1].lower() not in ("model_player", "model_world"):
+            elif _TF2CC_REF.search(str(v)) and path[-1].lower() not in ("model_player", "model_world", "item_iconname"):
                 errs.append("%s: tf2cc/Merc-only value %s = %s" % (k, "/".join(path), v))
             elif path[-1].lower() in ("model_player", "model_world") and "tf2cc" in str(v).lower():
                 errs.append("%s: model depends on tf2cc content: %s" % (k, v))

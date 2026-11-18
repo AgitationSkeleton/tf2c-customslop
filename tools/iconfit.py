@@ -373,7 +373,7 @@ def _axis_rot(axis, ang):
     return np.eye(3) + math.sin(ang) * K + (1 - math.cos(ang)) * K @ K
 
 
-def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None):
+def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None, v3=False, mats=None, hard=False):
     """Camera rotation maximising silhouette IoU (letterboxed, aspect kept) between the UNMODIFIED
     donor and its real icon: view directions spread over the sphere but kept roughly side-on to the
     weapon's long axis (icons never look down the barrel), in-plane roll from aligning principal
@@ -391,12 +391,24 @@ def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None):
     coarse = T[np.argsort(-area)[:900]]
     mid = T[np.argsort(-area)[:1500]]
     cen = (P[T[:, 0]] + P[T[:, 1]] + P[T[:, 2]]) / 3
-    a1 = np.linalg.svd(cen - np.average(cen, axis=0, weights=area), full_matrices=False)[2][0]
+    pcs = np.linalg.svd(cen - np.average(cen, axis=0, weights=area), full_matrices=False)[2]
+    a1 = pcs[0]
+    a3 = pcs[2] if len(pcs) > 2 else (np.cross(pcs[0], pcs[1]) if len(pcs) > 1 else pcs[0])
+
+    if hard:                                           # v3 hard mode: no priors, denser search
+        n_dirs = 1500
 
     def prior(R):
+        if hard:
+            return 0.0
         side = abs(R[1] @ a1)                          # 0 = perfectly side-on
         upside = max(0.0, -R[2][2])                    # world up pointing down on screen
-        return 0.15 * side + 0.05 * upside
+        p_ = 0.15 * side + 0.05 * upside
+        if v3:
+            # v3: a weapon icon looks along the weapon's THINNEST axis (its side); looking along the
+            # middle axis is a top-down view - both are perpendicular to the barrel
+            p_ += 0.12 * (1 - abs(R[1] @ a3))
+        return p_
 
     ext = float(np.linalg.norm(P.max(0) - P.min(0)))
     y0 = None
@@ -415,7 +427,7 @@ def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None):
         th = 2 * math.pi * i / g
         r = math.sqrt(1 - zz * zz)
         dvec = np.array([r * math.cos(th), r * math.sin(th), zz])
-        if abs(dvec @ a1) > 0.82:                      # within ~55 deg of side-on only
+        if abs(dvec @ a1) > 0.82 and not hard:         # within ~55 deg of side-on only
             continue
         R0 = _basis(dvec)
         C2 = (cen @ R0.T)[:, [0, 2]]
@@ -429,7 +441,7 @@ def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None):
                 beta = -alpha if mirror else alpha
                 # rotating the basis rows by -beta rotates projected coordinates by +beta
                 R = _rot2(R0, -beta)
-                for D in (None, 1.3 * ext, 0.7 * ext):
+                for D in ((None, 1.3 * ext, 0.8 * ext, 0.55 * ext) if hard else (None, 1.3 * ext, 0.7 * ext)):
                     best.append((score(R, mirror, coarse, D) - prior(R), R, mirror, D))
     best.sort(key=lambda x: -x[0])
     # refine the best coarse candidates AND their orientation siblings (turned 180 deg about the
@@ -437,7 +449,7 @@ def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None):
     # silhouette, the right one only wins after refinement (perspective + details)
     starts, seen = [], set()
     flip = np.diag([-1.0, -1.0, 1.0])
-    for s0, R, mirror, D in best[:5]:
+    for s0, R, mirror, D in best[:(10 if hard else 5)]:
         for R_, mi in ((R, mirror), (flip @ R, mirror), (R, not mirror), (flip @ R, not mirror)):
             k = (tuple(np.round(R_, 1).ravel()), mi)
             if k not in seen:
@@ -447,7 +459,7 @@ def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None):
     for R, mirror, D in starts:
         cur, cs, cd = R, score(R, mirror, mid, D) - prior(R), D
         step = 0.3
-        for it in range(60):
+        for it in range(90 if hard else 60):
             ax = np.array([rng.gauss(0, 1) for _ in range(3)])
             trial = _axis_rot(ax, step) @ cur
             u, _, vt = np.linalg.svd(trial)
@@ -466,6 +478,8 @@ def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None):
     out.sort(key=lambda x: -x[0])
     out = [(score(R_, mi, T, D_) - prior(R_), R_, mi, D_) for _, R_, mi, D_ in out[:6]]   # full mesh
     out.sort(key=lambda x: -x[0])
+    if v3 and textures is not None:
+        return _rerank_v3(m, icon_rgba, out, T, score, prior, textures, mats)
     if textures is not None:
         il = icon_rgba[..., :3].astype(np.float32).mean(-1) / 255
         ibb = bbox(ia)
@@ -488,13 +502,80 @@ def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None):
     return out[0]
 
 
-def fit_v2(m, icon_rgba, rng, icon_src=None, textures=None):
+def _rerank_v3(m, icon_rgba, out, T, score, prior, textures, mats):
+    """v3: every refined pose AND its orientation siblings (mirrored, turned 180 deg about screen-up,
+    both) scored by full-mesh silhouette IoU + colour agreement of the v2-shaded render with the
+    icon (per-channel correlation + chroma similarity): a backwards syringe has the same outline
+    but its coloured parts land on the wrong end."""
+    import srcshade as SS
+    ia = icon_rgba[..., 3].astype(np.float32) / 255
+    ibb = bbox(ia)
+    icol = crop_norm(icon_rgba[..., :3].astype(np.float32) / 255, ibb)
+    imsk = crop_norm(ia, ibb) > 0.5
+    flip = np.diag([-1.0, -1.0, 1.0])
+    cands, seen = [], set()
+    for cs, R, mirror, D in out:
+        for R_, mi in ((R, mirror), (flip @ R, mirror), (R, not mirror), (flip @ R, not mirror)):
+            k = (tuple(np.round(R_, 2).ravel()), mi)
+            if k not in seen:
+                seen.add(k)
+                cands.append((R_, mi, D))
+    best = None
+    for R, mirror, D in cands:
+        s_iou = score(R, mirror, T, D)
+        pp = (D, float((m.raw_pos @ R.T)[:, 1].mean())) if D else None
+        buf = raster_buffers(m, R, 160, textures=textures, mirror=mirror, persp=pp)
+        bb = bbox(buf["alpha"])
+        if bb is None:
+            continue
+        col = SS.shade(buf["nrm"], buf["alb"], buf["balpha"], buf["uv"], buf["matid"], buf["alpha"], mats)
+        rc = crop_norm(col, bb)
+        msk = imsk & (crop_norm(buf["alpha"], bb) > 0.5)
+        if msk.sum() > 40:
+            cors = [np.corrcoef(rc[..., k][msk], icol[..., k][msk])[0, 1] for k in range(3)]
+            corr = float(np.nanmean(cors))
+            ch_r = rc[msk] - rc[msk].mean(-1, keepdims=True)
+            ch_i = icol[msk] - icol[msk].mean(-1, keepdims=True)
+            chroma = 1.0 - min(1.0, float(np.abs(ch_r - ch_i).mean()) * 6)
+        else:
+            corr, chroma = 0.0, 0.0
+        total = s_iou - prior(R) + 0.5 * corr + 0.3 * chroma
+        if best is None or total > best[0]:
+            best = (total, s_iou, R, mirror, D)
+    return best[1], best[2], best[3], best[4]
+
+
+def load_overrides():
+    """Reviewed per-donor camera overrides (tools/icon_overrides.json): {key: {"mirror": bool,
+    "turn180": bool, "roll_deg": float, "note": str}} applied on top of the fitted camera."""
+    p = os.path.join(os.path.dirname(os.path.abspath(__file__)), "icon_overrides.json")
+    return json.load(open(p)) if os.path.exists(p) else {}
+
+
+def apply_override(f, ov):
+    if not ov:
+        return f
+    R = np.array(f["R"])
+    if ov.get("turn180"):
+        R = np.diag([-1.0, -1.0, 1.0]) @ R
+    if ov.get("roll_deg"):
+        R = _rot2(R, -math.radians(ov["roll_deg"]))
+    f = dict(f, R=R.tolist(), override=ov)
+    if "mirror" in ov:
+        f["mirror"] = bool(ov["mirror"])
+    return f
+
+
+def fit_v2(m, icon_rgba, rng, icon_src=None, textures=None, v3=False, mats=None, override=None, hard=False):
     """-> v2 fit dict: R, mirror, scale/centre framing so the donor's bbox lands on the icon's."""
     ia = icon_rgba[..., 3].astype(np.float32) / 255
     ibb = bbox(ia)
     if ibb is None or not tri_list(m):
         return None                          # empty icon or no triangles in the default bodygroups
-    s_iou, R, mir, D = fit_pose(m, icon_rgba, rng, textures=textures)
+    s_iou, R, mir, D = fit_pose(m, icon_rgba, rng, textures=textures, v3=v3, mats=mats, hard=hard)
+    if override:
+        f_ = apply_override(dict(R=R.tolist(), mirror=mir), override)
+        R, mir = np.array(f_["R"]), f_["mirror"]
     Qd = m.raw_pos @ R.T
     pp = (D, float(Qd[:, 1].mean())) if D else None          # fixed per donor (mutations keep it)
     buf0 = raster_buffers(m, R, 512, mirror=mir, persp=pp)
@@ -510,7 +591,8 @@ def fit_v2(m, icon_rgba, rng, icon_src=None, textures=None):
     icx, icy = (ibb[0] + ibb[2]) / 2, (ibb[1] + ibb[3]) / 2
     centre = (mc[0] - (icx - 256) / scale, mc[1] + (icy - 256) / scale)
     buf = raster_buffers(m, R, 512, scale=scale, centre=centre, mirror=mir, persp=pp)
-    return dict(version=VERSION, R=R.tolist(), mirror=bool(mir), persp=list(pp) if pp else None,
+    return dict(version=3 if v3 else 2, R=R.tolist(), mirror=bool(mir), persp=list(pp) if pp else None,
+                override=override or None,
                 scale=scale, centre=list(centre),
                 icon_bbox=list(map(int, ibb)), icon_src=icon_src,
                 scores=dict(pose_iou_letterbox=round(s_iou, 3), iou_canvas=round(iou(buf["alpha"], ia), 3)))

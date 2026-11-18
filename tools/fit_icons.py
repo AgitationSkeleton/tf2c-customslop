@@ -72,6 +72,19 @@ def of_icons():
     return _OF_ICONS
 
 
+def icon_variants(img):
+    """Where a game keeps an item's icon: <img>_large, <img>, team suffixes, and TF2C's team
+    sub-folders (vgui/loadout/weapons/blue/uberspritze_blue.vtf - the base name has no VTF)."""
+    if not img:
+        return []
+    img = img.replace("\\", "/")
+    d_, b_ = os.path.dirname(img), os.path.basename(img)
+    out = [img + "_large", img, img + "_red", img + "_blue"]
+    for team in ("blue", "red", "green", "yellow"):
+        out += ["%s/%s/%s_%s" % (d_, team, b_, team), "%s/%s/%s" % (d_, team, b_)]
+    return out
+
+
 def source_icon(ctx, d):
     """The donor's OWN source-game icon -> (512x512 RGBA, description) or (None, None).
     OF donors: Open Fortress's backpack/bucket sprite for that weapon (found by model name);
@@ -90,18 +103,18 @@ def source_icon(ctx, d):
                 if os.path.exists(p):
                     return IF.square_icon(vtf.decode(open(p, "rb").read())[2]), "Open Fortress " + rel
     img = d["kv"].get("image_inventory")
-    for suf in ("_large", "", "_red", "_blue"):
-        raw = ctx.fs.read("materials/" + img.replace("\\", "/") + suf + ".vtf") if img else None
+    for rel in icon_variants(img):
+        raw = ctx.fs.read("materials/" + rel + ".vtf")
         if raw is not None:
-            return IF.square_icon(vtf.decode(raw)[2]), "%s materials/%s%s" % (d["src"], img, suf)
+            return IF.square_icon(vtf.decode(raw)[2]), "%s materials/%s" % (d["src"], rel)
     # no icon of its own (presplit / MarxVee / beta models): the nearest same-weapon icon, i.e. the
     # stock TF2C weapon of the same item class (camera style only; its silhouette is approximate)
     ic = d["kv"].get("item_class")
     for k, img2 in stock_icons_by_class().get(ic, []):
-        for suf in ("_large", ""):
-            raw = ctx.fs.read("materials/" + img2 + suf + ".vtf")
+        for rel in icon_variants(img2):
+            raw = ctx.fs.read("materials/" + rel + ".vtf")
             if raw is not None:
-                return IF.square_icon(vtf.decode(raw)[2]), "nearest same-weapon icon: stock 5205 item %s %s" % (k, img2)
+                return IF.square_icon(vtf.decode(raw)[2]), "nearest same-weapon icon: stock 5205 item %s %s" % (k, rel)
     return None, None
 
 
@@ -124,8 +137,9 @@ def stock_icons_by_class():
     return _STOCK_ICONS
 
 
-def fit_donor_v2(ctx, d, rng):
-    """v2: fit the camera to the donor's own source-game icon (cache/icon_fit/<key>_v2.json)."""
+def fit_donor_v2(ctx, d, rng, version=2, hard=None):
+    """v2/v3: fit the camera to the donor's own source-game icon (cache/icon_fit/<key>_v<version>.json).
+    v3 adds the thinnest-axis prior, sibling + colour re-ranking and the reviewed override table."""
     key = "%s:%s" % (d["src"], d["id"])
     icon, why = source_icon(ctx, d)
     if icon is None:
@@ -144,7 +158,23 @@ def fit_donor_v2(ctx, d, rng):
         m = S.load(src)
         if kind == "v" or os.path.basename(rel).lower().startswith("v_"):
             m = IF.posed(m)                     # view models only make sense in their idle pose
-        f = IF.fit_v2(m, icon, rng, icon_src=why, textures=vmrender.textures_for(ctx, m, None))
+        if version >= 3:
+            ov = IF.load_overrides().get(key) or {}
+            tx_, mt_ = vmrender.textures_for(ctx, m, None), vmrender.materials_for(ctx, m, None)
+            hd = bool(ov.get("hard")) if hard is None else hard
+            f = IF.fit_v2(m, icon, rng, icon_src=why, textures=tx_, v3=True, mats=mt_, override=ov or None, hard=hd)
+            if f:
+                f["hard"] = hd
+            if f and hard is None and not hd and f["scores"]["iou_canvas"] < 0.8:
+                # poor fit: also try the prior-free dense search; keep it only if clearly better
+                fh = IF.fit_v2(m, icon, rng, icon_src=why, textures=tx_, v3=True, mats=mt_, override=ov or None, hard=True)
+                if fh and fh["scores"]["iou_canvas"] > f["scores"]["iou_canvas"] + 0.05:
+                    fh["hard"], fh["normal_scores"] = True, f["scores"]
+                    f = fh
+                else:
+                    f["hard_scores"] = fh["scores"] if fh else None
+        else:
+            f = IF.fit_v2(m, icon, rng, icon_src=why, textures=vmrender.textures_for(ctx, m, None))
         if f and (best is None or f["scores"]["iou_canvas"] > best[0]["scores"]["iou_canvas"]):
             f["model_kind"] = kind
             best = (f, m, src, rel)
@@ -155,7 +185,7 @@ def fit_donor_v2(ctx, d, rng):
         f["donor"] = key
         f["model"] = rel
         os.makedirs(IF.CACHE, exist_ok=True)
-        json.dump(f, open(IF.cache_path(key, 2), "w"), indent=1)
+        json.dump(f, open(IF.cache_path(key, version), "w"), indent=1, default=float)
     return key, f, (icon, m, src)
 
 
@@ -186,18 +216,19 @@ def main_v2(a):
     c["_attr_registry"], c["_used_hues"] = {}, []
     ctx = pipeline.Ctx(c)
     keys = a.only.split(",") if a.only else None
-    summ_p = os.path.join(IF.CACHE, "_v2_summary.json")
+    ver = a.version
+    summ_p = os.path.join(IF.CACHE, "_v%d_summary%s.json" % (ver, ("_" + a.tag) if a.tag else ""))
     summ = json.load(open(summ_p)) if os.path.exists(summ_p) else {}
     for d in ctx.donors:
         key = "%s:%s" % (d["src"], d["id"])
         if keys and key not in keys:
             continue
-        if os.path.exists(IF.cache_path(key, 2)):
-            f = json.load(open(IF.cache_path(key, 2)))
+        if os.path.exists(IF.cache_path(key, ver)):
+            f = json.load(open(IF.cache_path(key, ver)))
         else:
             saved, ctx.fs = ctx.fs, d["fs"]
             try:
-                f = fit_donor_v2(ctx, d, random.Random(7))[1]
+                f = fit_donor_v2(ctx, d, random.Random(7), version=ver)[1]
             except Exception as e:
                 print(key, "fit failed", repr(e)[:200])
                 f = None
@@ -214,6 +245,8 @@ def main():
     ap.add_argument("--all", action="store_true")
     ap.add_argument("--sheet", action="store_true")
     ap.add_argument("--v2", action="store_true", help="v2: fit every donor's camera to its own icon (cached)")
+    ap.add_argument("--version", type=int, default=2, help="camera fit version for --v2 (3 = v3 fit)")
+    ap.add_argument("--tag", default="", help="summary file suffix (parallel runs)")
     a = ap.parse_args()
     if a.v2:
         return main_v2(a)

@@ -1,0 +1,3 @@
+{
+ "_doc": "Reviewed per-donor icon camera overrides for the v3 fit (iconfit.apply_override). Keys are donor keys (src:id). Fields: hard (bool, prior-free dense search), mirror (bool), turn180 (bool, rotate 180 deg about screen-up), roll_deg (float, in-plane roll), note (why). Every entry must say why; review with tools/audit_icons.py --compare 2,3."
+}

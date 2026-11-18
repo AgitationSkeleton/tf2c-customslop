@@ -21,7 +21,16 @@ from generate import BASE_SCHEMA, load_schema  # noqa: E402
 import pipeline as P  # noqa: E402  (TYPE_NAMES)
 
 
-def relabel(w, tokens, stock):
+def donor_icon(ctx, summ_base):
+    """The donor's CURRENT kill icon (item_iconname) from the donor roster built on the installed
+    tf2cc base (pipeline.Ctx), or None (stock donors: the weapon class's default icon)."""
+    for d in ctx.donors:
+        if d["src"] == summ_base["src"] and d["id"] == summ_base["id"]:
+            return d["kv"].get("item_iconname")
+    return None
+
+
+def relabel(w, tokens, stock, ctx=None):
     d = os.path.join(ROOT, w["dir"])
     path = os.path.join(d, "item.txt")
     old = open(path, encoding="utf-8").read()
@@ -34,6 +43,13 @@ def relabel(w, tokens, stock):
         P.TYPE_NAMES.get(ic, P.re.sub(r"^tf2?c?_weapon_", "", ic).replace("_", " ").title())
     it = kv.KV([(k, itn if k.lower() == "item_type_name" else v) for k, v in it.pairs])
     it = labels.sanitize(it, src, list(w["classes"]))
+    if ctx is not None:
+        ic = donor_icon(ctx, json.load(open(os.path.join(d, "summary.json")))["base"])
+        if ic and it.get("item_iconname") != ic:
+            pairs = [(k, v) for k, v in it.pairs if k.lower() != "item_iconname"]
+            at = next((i for i, (k, _) in enumerate(pairs) if k.lower() == "item_slot"), len(pairs) - 1) + 1
+            pairs.insert(at, ("item_iconname", ic))
+            it = kv.KV(pairs)
     new = '"%d"\n{\n%s}\n' % (w["defindex"], kv.dump(it, 1))
     errs = labels.label_check(new, tokens)
     if errs:
@@ -45,16 +61,22 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--ids", type=int, nargs="*")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--iconname", action="store_true", help="also set item_iconname to the donor's current kill icon")
     a = ap.parse_args()
     c = Q.cfg()
     st = Q.load_state(c)
     tokens = labels.tf2c_tokens(c["server_root"])
     stock = labels.stock_types(load_schema(BASE_SCHEMA), tokens)
+    ctx = None
+    if a.iconname:
+        c2 = dict(c)
+        c2["_attr_registry"], c2["_used_hues"] = {}, []
+        ctx = P.Ctx(c2)
     changed = []
     for k, w in sorted(st["weapons"].items()):
         if w["status"] not in ("approved", "live") or (a.ids and w["defindex"] not in a.ids):
             continue
-        path, old, new = relabel(w, tokens, stock)
+        path, old, new = relabel(w, tokens, stock, ctx)
         if old == new:
             print("%s ok" % k)
             continue
@@ -66,7 +88,7 @@ def main():
                 shutil.copyfile(path, bak)
             open(path, "w", encoding="utf-8", newline="\n").write(new)
     if changed and not a.dry_run:
-        Q.journal(st, "relabel", ids=changed)
+        Q.journal(st, "relabel", ids=changed, iconname=bool(a.iconname))
         Q.save_state(st)
 
 

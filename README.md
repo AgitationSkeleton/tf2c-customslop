@@ -27,6 +27,14 @@ credentials**; it reads your own installs at run time (see CREDITS.md).
    stickies, Scout speed/jump, Soldier blast/rocket jump), sensible values with occasional big
    swings, and one deliberately irrelevant "comedy" stat on ~30% of weapons.
    `tools/statreport.py` compares the old and new rollers on the same donors.
+   **Only working, weapon-scoped attributes** (`tools/attrscope.py`, needs `tf2c_source_dir`):
+   every attribute class is classified from the TF2C game source's `CALL_ATTRIB_HOOK` call sites.
+   Rolled attributes must be read on the weapon itself or on the active weapon, and actually read
+   for the item's class; attributes read on the player (e.g. `mult_deploy_time`, holster time, max
+   health, damage taken) act on every weapon and across lives, so they are never rolled, nor are
+   attributes with no read site. `tools/attrtable.py` writes the table, `tools/attrtest.py` A/B
+   tests scope on an isolated server. Comedy (do-nothing) stats are off (`comedy_share`).
+   CustomSlop's own VScript effects are only rolled with `vscript_installed`.
 2. **Mutate** (`tools/mutate.py`): binary edits of the compiled model, no decompile. Droop, twist,
    bend, blunderbuss flare, distended barrels, squash, wobble, stretch and per-part rescaling.
    Long low-poly parts deform piecewise-affinely (no faceting). The grip region and everything
