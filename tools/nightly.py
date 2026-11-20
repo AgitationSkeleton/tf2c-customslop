@@ -56,8 +56,15 @@ def prepare(a):
     if not any(w.get("created") == today for w in st["weapons"].values()) and not a.publish_only:
         left = seconds_left()
         if left > 20 * 60:
-            subprocess.run([sys.executable, "-I", os.path.join(HERE, "slopqueue.py"), "generate",
-                            "--count", str(c["daily_count"])], check=False, timeout=min(left - 15 * 60, 40 * 60))
+            budget = min(left - 15 * 60, 40 * 60)
+            # the generator stops STARTING attempts 6 min before the budget ends (no mid-weapon kill);
+            # the timeout stays as the backstop
+            try:
+                subprocess.run([sys.executable, "-I", os.path.join(HERE, "slopqueue.py"), "generate",
+                                "--count", str(c["daily_count"]), "--stop-by", str(time.time() + budget)],
+                               check=False, timeout=budget + 60)
+            except subprocess.TimeoutExpired:
+                print("generate hit the prepare budget; weapons finished so far are kept")
         Q.journal(Q.load_state(c), "prepare_generated", date=today)
     left = seconds_left()
     if left < 5 * 60:

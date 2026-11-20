@@ -2,7 +2,7 @@
  "_readme": "Copy to config/customslop.json and fill in. Never put credentials here (see secrets.example.json).",
 
  "mode": "review",
- "daily_count": 3,
+ "daily_count": 5,
  "cap": 50,
  "defindex_first": 26000,
  "defindex_last": 29999,

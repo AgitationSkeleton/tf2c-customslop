@@ -42,6 +42,20 @@ import cspaths as CP  # noqa: E402
 import slopqueue as Q  # noqa: E402
 import vfs  # noqa: E402
 
+
+def quiet_console():
+    """STARTUPINFO for srcds: it keeps its own console (-console needs one) but starts minimised
+    and never takes focus (SW_SHOWMINNOACTIVE) - user: test windows were popping up."""
+    if os.name != "nt":
+        return None
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 7                 # SW_SHOWMINNOACTIVE
+    return si
+
+
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)    # tasklist / taskkill / powershell helpers
+
 ET = CP.opt("enginetest_dir") or os.path.join(ROOT, "enginetest")   # copy of the live install's srcds binaries
 GATE = os.path.join(ET, "gate", "tf2classified")      # the gate server's own game dir (tf2attributes_tf2c
 #                                                       only runs in a game folder named tf2classified)
@@ -163,13 +177,13 @@ def kill_leftovers():
         out = subprocess.run(["powershell", "-NoProfile", "-Command",
                               "Get-CimInstance Win32_Process -Filter \"name like 'srcds%'\" | "
                               "ForEach-Object { [string]$_.ProcessId + [char]9 + $_.CommandLine }"],
-                             capture_output=True, text=True, timeout=30).stdout
+                             capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW).stdout
     except Exception:
         return
     for line in out.splitlines():
         pid, _, cmd = line.partition("\t")
         if pid.strip().isdigit() and GATE.lower() in cmd.lower():
-            subprocess.run(["taskkill", "/PID", pid.strip(), "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", pid.strip(), "/T", "/F"], capture_output=True, creationflags=NO_WINDOW)
 
 
 def boot(vpk, timeout, port):
@@ -191,7 +205,8 @@ def boot(vpk, timeout, port):
            "+servercfgfile", "customslop_gate.cfg", "+map", "ctf_2fort"]
     kill_leftovers()
     t0 = time.time()
-    p = subprocess.Popen(cmd, cwd=ET, creationflags=subprocess.CREATE_NEW_CONSOLE)   # -console needs a console
+    p = subprocess.Popen(cmd, cwd=ET, creationflags=subprocess.CREATE_NEW_CONSOLE,   # -console needs a console
+                         startupinfo=quiet_console())                             # minimised, no focus
 
     def txt():
         return open(log, encoding="utf-8", errors="replace").read() if os.path.exists(log) else ""
@@ -208,7 +223,7 @@ def boot(vpk, timeout, port):
             time.sleep(1)
     finally:
         if p.poll() is None:
-            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, creationflags=NO_WINDOW)
             try:
                 p.wait(timeout=20)
             except Exception:

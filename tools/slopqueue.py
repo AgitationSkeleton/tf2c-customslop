@@ -24,6 +24,7 @@ import os
 import random
 import shutil
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -35,7 +36,7 @@ STATE = os.path.join(STATE_DIR, "catalogue.json")
 QUEUE = os.environ.get("CUSTOMSLOP_QUEUE_DIR") or os.path.join(ROOT, "queue")   # override: dry runs only
 DEFAULT_CFG = {
     "mode": "review",                 # review | automation   (automation only after the user's go-ahead)
-    "daily_count": 3,
+    "daily_count": 5,
     "cap": 50,                        # CustomSlop weapons only; stock / April Fools / tf2cc never count
     "defindex_first": 26000, "defindex_last": 29999,
     "ill_fit": 0.15, "multi": 0.10,
@@ -73,6 +74,9 @@ def save_state(st):
 
 def journal(st, what, **kw):
     st["journal"].append(dict(t=dt.datetime.now().isoformat(timespec="seconds"), what=what, **kw))
+
+
+ATTEMPT_MARGIN = 6 * 60    # one weapon attempt at IDLE priority takes ~1.5-5 min
 
 
 def reserve(st, c):
@@ -171,8 +175,16 @@ def cmd_generate(a):
     prev_types, recent_types = type_history(st, dt.date.today().isoformat())
     taken_types, taken_slots = set(), set()
     made = []
+    out_of_time = False
     for r in recipes:
         for attempt in range(10):
+            if getattr(a, "stop_by", None) and time.time() > a.stop_by - ATTEMPT_MARGIN:
+                print("prepare budget nearly used: no further weapon attempts tonight (%d made)" % len(made))
+                journal(st, "generate_stopped_budget", made=len(made), wanted=len(recipes))
+                save_state(st)
+                out_of_time = True
+                s = None
+                break
             di = reserve(st, c)
             save_state(st)                                   # reservation persists before any work
             out = os.path.join(QUEUE, "pending", str(di))
@@ -193,6 +205,8 @@ def cmd_generate(a):
                 print("REROLL", di, repr(e)[:160])
                 s = None
                 continue
+            break
+        if out_of_time:
             break
         if s is None:
             continue
@@ -342,6 +356,8 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
     g = sp.add_parser("generate")
     g.add_argument("--count", type=int)
+    g.add_argument("--stop-by", type=float, help="epoch seconds: start no weapon attempt later than "
+                   "ATTEMPT_MARGIN before this (nightly prepare budget)")
     g.add_argument("--seed", type=int)
     g.add_argument("--test-batch", action="store_true")
     g.add_argument("--first-deploy", action="store_true")

@@ -12,6 +12,7 @@ make_weapon(defindex, rng, cfg, recipe) builds one complete weapon into <out_dir
 Automatic safety (both modes): crash-safety clamps/whitelists (attrpool GUARDS), structural model
 validation, a render-based quality gate; a failing weapon is re-rolled, never shipped.
 """
+import collections
 import json
 import math
 import os
@@ -49,6 +50,8 @@ import iconfit as IF  # noqa: E402
 import labels  # noqa: E402
 import relevance  # noqa: E402
 import attrscope  # noqa: E402
+import attreffect  # noqa: E402
+import taunts  # noqa: E402
 from generate import (CLASSES, CLASS_SLOTS, FAMILY, CLIPLESS, BASE_SCHEMA, AF_SCHEMA, load_schema)  # noqa: E402
 
 POOL = os.path.join(ROOT, "analysis", "attribute_pool_5205.json")
@@ -265,11 +268,13 @@ class Ctx:
 # ---------------------------------------------------------------- attribute rolling
 HIGHER_IS_WORSE = re.compile(r"^(mult_postfiredelay|mult_reload_time|mult_deploy_time|mult_switch_from_wep_deploy_time|"
                              r"mult_spread_scale|mult_dmgtaken|mult_minigun_spinup_time|mult_flame_ammopersec|"
-                             r"mult_cloak_meter_consume|mult_gesture_time_penalty|mult_dmg_falloff_unused)")
+                             r"mult_cloak_meter_consume|mult_gesture_time_penalty|mult_dmg_falloff_unused|mult_single_wep_deploy_time|"
+                             r"mult_airblast_cost|rocket_jump_dmg_reduction|stickybomb_charge_rate|mult_postfiredelay_scoped)")
 HIGHER_IS_BETTER = re.compile(r"^(mult_dmg$|mult_dmg_vs|mult_clipsize|mult_maxammo|mult_projectile_speed|mult_explosion_radius|"
                               r"mult_bullets_per_shot|mult_player_movespeed|mult_health|mult_heal|mult_medigun|"
                               r"mult_cloak_meter_regen|mult_sniper_charge|mult_engy|mult_sentry|mult_projectile_range|"
-                              r"mult_wpn_burn|mult_charge)")
+                              r"mult_wpn_burn|mult_charge|mult_flame_size|mult_player_aiming_movespeed|mult_construction_value|"
+                              r"mult_repair_value|effectbar_recharge_rate)")
 
 
 def semantic_side(p):
@@ -373,7 +378,17 @@ def roll_attributes_v1(ctx, rng, fam, slot, recipe, item_class=None, classes=())
 def finish_attributes(ctx, rng, chosen, fam, recipe, mild=False, big=()):
     out = []
     for p in chosen:
-        v = roll_value(p, rng, extreme=recipe.get("extreme", False) or id(p) in big, mild=mild)
+        v = attreffect.roll(p, rng)
+        if v is None:
+            v = roll_value(p, rng, extreme=recipe.get("extreme", False) or id(p) in big, mild=mild)
+        props = getattr(ctx, "_weapon_props", None)
+        if props is not None and not attreffect.observable(p, v, props):
+            for _ in range(12):                        # clip / pellets: the rounded result must change
+                v = attreffect.roll(p, rng)
+                if attreffect.observable(p, v, props):
+                    break
+            else:
+                continue
         name = p["name"]
         # values with known mechanics follow the mechanics; TF2's own format then shows them as the
         # game would. Only a negative number in front of magnitude wording ("-50% slower") reads
@@ -392,12 +407,13 @@ def finish_attributes(ctx, rng, chosen, fam, recipe, mild=False, big=()):
 
 
 # relevance-aware roller (v2): most stats do something on THIS weapon for THIS class
-COMEDY_P = 0.0           # comedy stats (deliberately irrelevant = do nothing) are off: user, 2026-11-17
-#                          ("a lot of customslop attributes flat-out dont work"); config comedy_share
+COMEDY_P = 0.30          # share of weapons with ONE deliberate joke stat (user 2026-11-20: every stat must work
+#                          "with the exception of one or two deliberately-joke stats"); config comedy_share
+COMEDY_P2 = 0.05         # share with TWO (attreffect.JOKE_MAX); config comedy_share2
 BIG_SWING_P = 0.12       # per-attribute chance of a big value swing
 CORE = re.compile(r"^(mult_dmg|mult_postfiredelay|mult_clipsize|mult_reload_time|mult_player_movespeed|add_maxhealth|"
                   r"mult_maxammo|mult_spread_scale|mult_projectile_speed|mult_explosion_radius|mult_bullets_per_shot|"
-                  r"mult_dmgtaken|mult_deploy_time|mult_crit_chance|add_onhit_addhealth|mult_flame|mult_sniper_charge|"
+                  r"mult_dmgtaken|mult_deploy_time|mult_crit_chance|mult_flame|mult_sniper_charge|"
                   r"mult_minigun_spinup|mult_cloak|mult_engy|mult_medigun|mult_wpn_burn|mult_dmg_vs)")
 
 
@@ -411,14 +427,25 @@ def roll_attributes(ctx, rng, fam, slot, recipe, item_class=None, classes=()):
     classes = list(classes)
     prov = relevance.provides(item_class or "", fam, classes, slot)
     want = recipe.get("n_attr") or rng.choices([3, 4, 5, 6], weights=[3, 4, 3, 1])[0]
-    comedy = 1 if recipe.get("comedy", rng.random() < float(ctx.cfg.get("comedy_share", COMEDY_P))) else 0
+    r_ = rng.random()
+    comedy = recipe.get("comedy")
+    if comedy is None:
+        comedy = 2 if r_ < float(ctx.cfg.get("comedy_share2", COMEDY_P2)) else \
+            (1 if r_ < float(ctx.cfg.get("comedy_share", COMEDY_P)) else 0)
+    comedy = min(int(comedy), attreffect.JOKE_MAX)
+    ctx._weapon_props = weapon_props(ctx, item_class, classes)
     cands = [p for p in ctx.pool if not p["cls"].startswith(("override_projectile_type", "custom_projectile_model"))]
     # 5205 source gate (attrscope.py): only attributes read on THIS weapon or on the ACTIVE weapon
     # (never on the player: those act on every weapon and persist across switches and lives), and
     # actually read for this item class; CustomSlop's VScript effects only if the VScript is installed
+    every = cands
     if ctx.attr_scope is not None:
         cands = [p for p in cands if (p.get("vscript") and ctx.cfg.get("vscript_installed"))
                  or attrscope.works_on(ctx.attr_scope.get(p["cls"]), item_class, ctx.attr_links)]
+    # reviewed effect whitelist (attreffect.py): visible, a value that does something, right sign
+    cands = [p for p in cands if (p.get("vscript") and ctx.cfg.get("vscript_installed"))
+             or attreffect.allowed(p, item_class)]
+    per_cls = collections.Counter(p["cls"] for p in cands)
     nd = {id(p): relevance.needs(p, ctx.attr_cat) for p in cands}
     rel = [p for p in cands if nd[id(p)] in prov]
     if len(rel) < 8:                     # relevance tags too narrow for this class: the source gate rules
@@ -436,7 +463,7 @@ def roll_attributes(ctx, rng, fam, slot, recipe, item_class=None, classes=()):
             w *= 2.0
         if nd[id(p)] != "any":
             w *= 2.5                                         # weapon-specific mechanics over generic stats
-        return w
+        return w / per_cls.get(p["cls"], 1)                  # a class with 4 definitions is not 4x as likely
 
     def pick(pool):
         pool = [p for p in pool if p["cls"] not in used]
@@ -459,14 +486,65 @@ def roll_attributes(ctx, rng, fam, slot, recipe, item_class=None, classes=()):
     while len(chosen) < want - comedy:
         if pick(rel) is None:
             break
+    jokes = []
     if comedy:
-        # funniest when it belongs to another class's mechanic ("+30% sentry damage" on a rocket launcher)
-        joke = [p for p in cands if nd[id(p)] not in prov and nd[id(p)] not in ("unknown", "none") and visible(p)]
-        pick(joke or [p for p in cands if nd[id(p)] not in prov and nd[id(p)] != "unknown" and visible(p)])
+        # deliberate jokes: a reviewed, visible stat that is provably INERT here - weapon-scoped (never
+        # read on the player, so it cannot leak onto other weapons) and either not read for this item
+        # class at all, or for a mechanic this weapon/class doesn't have ("+30% sentry damage" on a
+        # rocket launcher). Marked joke=True in the summary.
+        jp = []
+        for p in every:
+            if p["cls"] in used or p.get("vscript") or not attreffect.SPEC.get(p["name"]) or not visible(p):
+                continue
+            info = ctx.attr_scope.get(p["cls"]) if ctx.attr_scope is not None else None
+            if not info or info["verdict"] != "safe":
+                continue
+            works = attrscope.works_on(info, item_class, ctx.attr_links) and attreffect.allowed(p, item_class)
+            need = relevance.needs(p, ctx.attr_cat)
+            if not works or (need not in prov and need not in ("any", "unknown", "none")):
+                jp.append(p)
+        for _ in range(comedy):
+            q = [p for p in jp if p["cls"] not in used]
+            if not q:
+                break
+            j = q[rng.randrange(len(q))]
+            chosen.append(j)
+            used.add(j["cls"])
+            jokes.append(j)
     big = {id(p) for p in chosen if rng.random() < BIG_SWING_P}
     out = finish_attributes(ctx, rng, chosen, fam, recipe, mild=True, big=big)
-    for a, p in zip(out, chosen):
-        a["needs"], a["relevant"] = nd[id(p)], nd[id(p)] in prov
+    by_name = {}
+    for p in chosen:
+        by_name.setdefault(p["name"], p)
+    joke_ids = {id(p) for p in jokes}
+    for a in out:
+        p = by_name.get(a.get("base_def") or a["name"])
+        if p is None:
+            continue
+        a["needs"] = nd.get(id(p)) or relevance.needs(p, ctx.attr_cat)
+        a["relevant"] = a["needs"] in prov
+        a["joke"] = id(p) in joke_ids
+    return out
+
+
+def weapon_props(ctx, item_class, classes):
+    """clip / bullets per shot from the 5205 weapon script of the entity the item really is."""
+    ent = item_class or ""
+    try:
+        if classes:
+            ent = taunts.entity(item_class, sorted(classes)[0]) or ent
+    except Exception:
+        pass
+    out = {}
+    for nm in (ent, item_class or ""):
+        d = ctx.fs.read("scripts/%s.txt" % nm) if nm else None
+        if d is None:
+            continue
+        t = d.decode("latin-1")
+        m = re.search(r'"?clip_size"?\s+"?(-?\d+)', t, re.I)
+        b = re.search(r'"?BulletsPerShot"?\s+"?(\d+)', t, re.I)
+        out = dict(clip=int(m.group(1)) if m else None, bullets=int(b.group(1)) if b else 1)
+        break
     return out
 
 
@@ -683,7 +761,27 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
         extra = [c for c in CLASSES if c not in classes and slot in CLASS_SLOTS[c] and arms_ok.get(c, True)]
         for c2 in rng.sample(extra, min(len(extra), recipe.get("multi_n", 1))):
             classes[c2] = "1"
-    attrs = roll_attributes(ctx, rng, fam, slot, recipe, donor["kv"].get("item_class"), list(classes))
+    # taunts (user: generated weapons must taunt for the classes they're given to): 5205 matches
+    # taunt rules on class + the active weapon entity's classname. Use a behaviour-equivalent
+    # item_class every chosen class can taunt with (generic shotgun/pistol, the class's own stock
+    # melee, or "saxxy" for multi-class melee); if none exists, re-pick a class that can taunt.
+    ic0 = donor["kv"].get("item_class")
+    item_class = taunts.fix_item_class(ctx.fs, list(classes), ic0, fam)
+    if item_class is None:
+        cands = [c for c in CLASSES if arms_ok.get(c, True) and (slot in CLASS_SLOTS[c] or fam != "melee")
+                 and taunts.fix_item_class(ctx.fs, [c], ic0, fam)]
+        pref = [c for c in cands if c in home and c not in avoid] or [c for c in cands if c in home] or cands
+        if pref:
+            c_ = rng.choice(pref)
+            classes = {c_: "1" if slot in CLASS_SLOTS[c_] else (("melee" if fam == "melee" else slot))}
+            wrong = None if c_ in home else c_
+            item_class = taunts.fix_item_class(ctx.fs, [c_], ic0, fam)
+        else:
+            # no class this model fits can taunt with this weapon: re-roll the donor (the generator
+            # retries failed weapons) rather than ship a weapon that cannot taunt
+            raise RuntimeError("no taunt-capable class for %s:%s (%s)" % (donor["src"], donor["id"], ic0))
+    taunt_ok = {c: taunts.ok(ctx.fs, c, item_class) for c in classes}
+    attrs = roll_attributes(ctx, rng, fam, slot, recipe, item_class, list(classes))
     ninfo = dict(item_class=donor["kv"].get("item_class"), fam=fam, slot=slot, classes=list(classes), attrs=attrs, wrong=wrong)
     name = names.make_name(rng, used_names, ninfo)
     traits = [t for t, cond in (("self_ignite", any(a["cls"] == "customslop_ignite_self" for a in attrs)),
@@ -841,7 +939,7 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
     cimg = card.render_card(name, type_line, lines, icon, fonts=ctx.fonts, crisp=ctx.cfg.get("renderer") == "v2")
     cimg.save(os.path.join(out_dir, "card.png"))
     # ---- schema fragment
-    it = emit(defindex, name, desc, donor, slot, classes, attrs, mdir, tag, outs, snd, itn=itn)
+    it = emit(defindex, name, desc, donor, slot, classes, attrs, mdir, tag, outs, snd, itn=itn, item_class=item_class)
     frag = '"%d"\n{\n%s}\n' % (defindex, kv.dump(it, 1))
     own = {n.lower(): dict(integer=False) for n in ctx.attr_registry}
     own["customslop ignite self on attack"] = dict(integer=False)
@@ -855,6 +953,7 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
         raise RuntimeError("label gate failed: %s" % lerrs[:3])
     open(os.path.join(out_dir, "item.txt"), "w", encoding="utf-8").write(frag)
     summary = dict(defindex=defindex, name=name, description=desc, classes=classes, wrong_class=wrong, slot=slot,
+                   item_class=item_class, taunt=taunt_ok,
                    family=fam, level=level, type_line=type_line,
                    base=dict(src=donor["src"], id=donor["id"], item_class=donor["kv"].get("item_class"),
                              model_player=donor["mp"], model_world=donor["mw"], credit=donor["credit"]),
@@ -1024,13 +1123,14 @@ class _One:
         self.cdmaterials = [cd]
 
 
-def emit(defindex, name, desc, donor, slot, classes, attrs, mdir, tag, outs, snd=None, itn=None):
+def emit(defindex, name, desc, donor, slot, classes, attrs, mdir, tag, outs, snd=None, itn=None, item_class=None):
     # never carry Merc / tf2cc-only keys onto a non-Merc item (labels.sanitize)
     d = labels.sanitize(donor["kv"], donor["src"], list(classes))
     it = kv.KV()
     for k_, v_ in (("name", "customslop_%d" % defindex), ("item_name", name),
                    ("item_type_name", itn), ("item_description", desc),
-                   ("item_quality", "unique"), ("propername", "0"), ("item_class", d.get("item_class")), ("item_slot", slot)):
+                   ("item_quality", "unique"), ("propername", "0"), ("item_class", item_class or d.get("item_class")),
+                   ("item_slot", slot)):
         it.add(k_, v_)
     ubc = kv.KV()
     for c, s in classes.items():

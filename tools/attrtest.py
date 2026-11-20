@@ -113,7 +113,8 @@ def main():
     cmd = [os.path.join(ET.ET, "srcds_win64.exe"), "-game", ET.GAME, "-console", "-insecure", "-nomaster", "-nocrashdialog",
            "-condebug", "-usercon", "-nohltv", "+sv_lan", "1", "+ip", "127.0.0.1", "+hostport", str(PORT), "+clientport",
            str(PORT - 1), "+tv_enable", "0", "+maxplayers", "4", "+servercfgfile", "customslop_attrtest.cfg", "+map", "ctf_2fort"]
-    p = subprocess.Popen(cmd, cwd=ET.ET, creationflags=subprocess.CREATE_NEW_CONSOLE | 0x4000)
+    p = subprocess.Popen(cmd, cwd=ET.ET, creationflags=subprocess.CREATE_NEW_CONSOLE | 0x40,   # IDLE priority
+                         startupinfo=ET.quiet_console())                          # minimised, no focus
     res = dict(cases=[], raw=[])
     try:
         t0 = time.time()
@@ -157,7 +158,7 @@ def main():
         p.wait(timeout=30)
     finally:
         if p.poll() is None:
-            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True)
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, creationflags=ET.NO_WINDOW)
         open(cfgp, "w").write("// rcon password removed after the run\n")
     txt = open(log, encoding="utf-8", errors="replace").read() if os.path.exists(log) else ""
     try:

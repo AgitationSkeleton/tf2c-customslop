@@ -32,6 +32,20 @@ sys.path.insert(0, HERE)
 import apply as A  # noqa: E402
 import slopqueue as Q  # noqa: E402
 import vfs  # noqa: E402
+
+
+def quiet_console():
+    """STARTUPINFO for srcds: it keeps its own console (-console needs one) but starts minimised
+    and never takes focus (SW_SHOWMINNOACTIVE) - user: test windows were popping up."""
+    if os.name != "nt":
+        return None
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    si.wShowWindow = 7                 # SW_SHOWMINNOACTIVE
+    return si
+
+
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)    # tasklist / taskkill / powershell helpers
 import cspaths as P  # noqa: E402
 
 ET = P.opt("enginetest_dir") or os.path.join(ROOT, "enginetest")
@@ -173,7 +187,8 @@ def run(ids, timeout=240):
            "+tv_enable", "0", "+maxplayers", "8", "+tf_allow_server_hibernation", "0",
            "+servercfgfile", "customslop_test.cfg", "+map", "ctf_2fort"]
     t0 = time.time()
-    p = subprocess.Popen(cmd, cwd=ET, creationflags=subprocess.CREATE_NEW_CONSOLE)   # -console needs a real console
+    p = subprocess.Popen(cmd, cwd=ET, creationflags=subprocess.CREATE_NEW_CONSOLE,   # -console needs a real console
+                         startupinfo=quiet_console())                             # minimised, no focus
     rc, steps = None, []
 
     def logtxt():
