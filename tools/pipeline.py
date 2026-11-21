@@ -52,6 +52,7 @@ import relevance  # noqa: E402
 import attrscope  # noqa: E402
 import attreffect  # noqa: E402
 import taunts  # noqa: E402
+import slotrule  # noqa: E402
 from generate import (CLASSES, CLASS_SLOTS, FAMILY, CLIPLESS, BASE_SCHEMA, AF_SCHEMA, load_schema)  # noqa: E402
 
 POOL = os.path.join(ROOT, "analysis", "attribute_pool_5205.json")
@@ -721,18 +722,9 @@ def pick_donor(rng, pool, recipe):
     return cand[int(rng.choices(range(len(cand)), weights=wts)[0])]
 
 
-def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
-    recipe = recipe or {}
-    used_names = used_names if used_names is not None else set()
+def choose_classes(ctx, rng, donor, recipe):
+    """Classes + item_class for a donor (slot rule + taunt rule); raises when none fits."""
     cfg = ctx.cfg
-    pool = ctx.donors
-    if recipe.get("families"):
-        pool = [d for d in pool if d["fam"] in recipe["families"]] or pool
-    if recipe.get("slot"):
-        pool = [d for d in pool if d["slot"] == recipe["slot"]] or pool
-    if recipe.get("need_world"):
-        pool = [d for d in pool if d["mw"]] or pool
-    donor = pick_donor(rng, pool, recipe)
     fam, slot = donor["fam"], donor["slot"]
     arms_ok = ctx.audit.get("%s:%s" % (donor["src"], donor["id"]), {}).get("arms") or {c: True for c in CLASSES}
     home = [c for c in donor["classes"] if c in CLASSES and arms_ok.get(c, True)] or         [c for c in CLASSES if arms_ok.get(c, True) and slot in CLASS_SLOTS[c]] or ["Soldier"]
@@ -754,21 +746,47 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
     # taunt rules on class + the active weapon entity's classname. Use a behaviour-equivalent
     # item_class every chosen class can taunt with (generic shotgun/pistol, the class's own stock
     # melee, or "saxxy" for multi-class melee); if none exists, re-pick a class that can taunt.
+    # slot rule (user bug 2026-11-20, slotrule.py): the item_class must natively belong to the slot it
+    # is given to for EVERY class, else the client's slot-1/2 keys stop switching. Combined with the
+    # taunt rule: slotrule.fix returns an item_class passing both (donor's own, taunt equivalents, or
+    # a same-family class native to that slot); else re-pick the class; else re-roll the donor.
     ic0 = donor["kv"].get("item_class")
-    item_class = taunts.fix_item_class(ctx.fs, list(classes), ic0, fam)
+    eff = lambda cd: {c: slotrule.slot_for(cd, c, slot) for c in cd}          # noqa: E731
+    item_class = slotrule.fix(ctx.fs, eff(classes), ic0, fam)
     if item_class is None:
-        cands = [c for c in CLASSES if arms_ok.get(c, True) and (slot in CLASS_SLOTS[c] or fam != "melee")
-                 and taunts.fix_item_class(ctx.fs, [c], ic0, fam)]
-        pref = [c for c in cands if c in home and c not in avoid] or [c for c in cands if c in home] or cands
+        cands = []
+        for c in CLASSES:
+            if not arms_ok.get(c, True):
+                continue
+            s_ = slot if slot in CLASS_SLOTS[c] else ("melee" if fam == "melee" else None)
+            if s_ and slotrule.fix(ctx.fs, {c: s_}, ic0, fam):
+                cands.append((c, s_))
+        pref = [x for x in cands if x[0] in home and x[0] not in avoid] or [x for x in cands if x[0] in home] or cands
         if pref:
-            c_ = rng.choice(pref)
-            classes = {c_: "1" if slot in CLASS_SLOTS[c_] else (("melee" if fam == "melee" else slot))}
+            c_, s_ = pref[rng.randrange(len(pref))]
+            classes = {c_: "1" if s_ == slot else s_}
             wrong = None if c_ in home else c_
-            item_class = taunts.fix_item_class(ctx.fs, [c_], ic0, fam)
+            item_class = slotrule.fix(ctx.fs, eff(classes), ic0, fam)
         else:
-            # no class this model fits can taunt with this weapon: re-roll the donor (the generator
-            # retries failed weapons) rather than ship a weapon that cannot taunt
-            raise RuntimeError("no taunt-capable class for %s:%s (%s)" % (donor["src"], donor["id"], ic0))
+            # no class this model fits passes slot + taunt with this weapon: re-roll the donor
+            raise RuntimeError("no slot-native, taunt-capable class for %s:%s (%s)" % (donor["src"], donor["id"], ic0))
+    slot_ok = {c: slotrule.ok(c, item_class, sl) for c, sl in eff(classes).items()}
+    return fam, slot, arms_ok, classes, wrong, item_class, slot_ok
+
+
+def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
+    recipe = recipe or {}
+    used_names = used_names if used_names is not None else set()
+    cfg = ctx.cfg
+    pool = ctx.donors
+    if recipe.get("families"):
+        pool = [d for d in pool if d["fam"] in recipe["families"]] or pool
+    if recipe.get("slot"):
+        pool = [d for d in pool if d["slot"] == recipe["slot"]] or pool
+    if recipe.get("need_world"):
+        pool = [d for d in pool if d["mw"]] or pool
+    donor = pick_donor(rng, pool, recipe)
+    fam, slot, arms_ok, classes, wrong, item_class, slot_ok = choose_classes(ctx, rng, donor, recipe)
     taunt_ok = {c: taunts.ok(ctx.fs, c, item_class) for c in classes}
     attrs = roll_attributes(ctx, rng, fam, slot, recipe, item_class, list(classes))
     ninfo = dict(item_class=donor["kv"].get("item_class"), fam=fam, slot=slot, classes=list(classes), attrs=attrs, wrong=wrong)
@@ -942,7 +960,7 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
         raise RuntimeError("label gate failed: %s" % lerrs[:3])
     open(os.path.join(out_dir, "item.txt"), "w", encoding="utf-8").write(frag)
     summary = dict(defindex=defindex, name=name, description=desc, classes=classes, wrong_class=wrong, slot=slot,
-                   item_class=item_class, taunt=taunt_ok,
+                   item_class=item_class, taunt=taunt_ok, slot_native=slot_ok,
                    family=fam, level=level, type_line=type_line,
                    base=dict(src=donor["src"], id=donor["id"], item_class=donor["kv"].get("item_class"),
                              model_player=donor["mp"], model_world=donor["mw"], credit=donor["credit"]),
