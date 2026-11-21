@@ -238,8 +238,9 @@ def boot(vpk, timeout, port):
     return (counts[-1] if counts else None), bad, info
 
 
-def baseline(c, live_root, target_root, port, timeout):
-    """Count with tf2cc's VPK alone (no CustomSlop VPK), cached by every input that changes it."""
+def baseline(c, live_root, target_root, port, timeout, fresh=False):
+    """Count with tf2cc's VPK alone (no CustomSlop VPK), cached by every input that changes it.
+    fresh=True ignores the cache (a cached count that cannot be right is re-measured once)."""
     custom = os.path.join(target_root, "custom")
     parts = [sha_file(os.path.join(live_root, "bin", "x64", "server.dll"))]
     for e in sorted(os.listdir(custom)):
@@ -255,7 +256,7 @@ def baseline(c, live_root, target_root, port, timeout):
                     parts.append(e + rel + sha_file(q))
     key = hashlib.sha1("|".join(parts).encode()).hexdigest()
     cache = os.path.join(Q.STATE_DIR, "gate_baseline.json")
-    if os.path.exists(cache):
+    if os.path.exists(cache) and not fresh:
         d = json.load(open(cache))
         if d.get("key") == key and d.get("count"):
             return d
@@ -269,8 +270,12 @@ def baseline(c, live_root, target_root, port, timeout):
 def verify(vpk, target_root=None, c=None):
     """Engine-check one staged schema VPK. Returns a result dict with ok=True/False."""
     c = c or Q.cfg()
-    live_root = c["server_root"]
-    target_root = target_root or live_root
+    # Absolute paths always: gameinfo.txt is read by srcds from its own cwd, so a relative mount
+    # silently fails there and the boot falls back to the live loose schema (which carries
+    # CustomSlop's items) - 2026-11-20 that cached a baseline of 114 instead of 99.
+    live_root = os.path.abspath(c["server_root"])
+    target_root = os.path.abspath(target_root or live_root)
+    vpk = os.path.abspath(vpk)
     port, timeout = int(c.get("gate_port", 27993)), int(c.get("gate_timeout", 120))
     t0 = time.time()
     res = dict(vpk_sha1=sha_file(vpk), target=target_root)
@@ -285,6 +290,10 @@ def verify(vpk, target_root=None, c=None):
         own = len(set(re.findall(rb'^"(2[6-9]\d{3})"\s*$', txt, flags=re.M)))
         base = baseline(c, live_root, target_root, port, timeout)
         n, bad, info = boot(vpk, timeout, port)
+        if n is not None and base.get("count") and n < base["count"] + own and base.get("at") is not None:
+            # A cached baseline the staged boot cannot reach may be stale or contaminated: measure it
+            # once more before failing (a genuine shortfall fails again with the fresh count).
+            base = baseline(c, live_root, target_root, port, timeout, fresh=True)
         res.update(own_items=own, baseline=base.get("count"), baseline_bad=base.get("bad"), count=n, bad=bad,
                    boot=info, need=(base.get("count") or 0) + own)
         why = []

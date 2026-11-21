@@ -71,6 +71,17 @@ def arms_bonemerge_report(vm, arms):
     return dict(arms_bones_used=len(used), sides=out, shared_missing=shared_missing, ok=ok)
 
 
+def basetexture(txt):
+    """$basetexture of a VMT text (key quoted or not, value quoted or not, with or without a .vtf
+    extension - TF2C's hunting revolver / fishwhacker / tranquilizer VMTs use each form), lower-case,
+    forward slashes, no extension; None if absent."""
+    mm = re.search(r'^\s*"?\$basetexture"?\s+"?([^"\s]+)"?', txt, re.I | re.M)
+    if not mm:
+        return None
+    bt = mm.group(1).replace("\\", "/").lower().strip("/")
+    return bt[:-4] if bt.endswith(".vtf") else bt
+
+
 def textures_for(ctx, m, files_root):
     import pipeline
     out = {}
@@ -84,9 +95,9 @@ def textures_for(ctx, m, files_root):
             elif ctx.fs.read(rel) is not None:
                 _, txt = pipeline.resolve_vmt(ctx, pipeline._One(cd), t)
             if txt:
-                mm = re.search(r'"\$basetexture"\s+"([^"]+)"', txt, re.I)
-                if mm:
-                    bt = "materials/" + mm.group(1).replace("\\", "/").lower() + ".vtf"
+                bt = basetexture(txt)
+                if bt:
+                    bt = "materials/" + bt + ".vtf"
                     raw = open(os.path.join(files_root, bt), "rb").read() if files_root and os.path.exists(
                         os.path.join(files_root, bt)) else ctx.fs.read(bt)
                     if raw:

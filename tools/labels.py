@@ -108,6 +108,72 @@ def donor_type_name(src, dkv, tokens):
     return None
 
 
+_KILLICONS = None
+
+
+def known_killicons():
+    """Kill-icon names the 5205 client can draw (pipeline.known_killicons on the installed game)."""
+    global _KILLICONS
+    if _KILLICONS is None:
+        import pipeline
+        import vfs as VFS
+        _KILLICONS = pipeline.known_killicons(VFS.VFS(), pipeline.Q_SERVER_ROOT)
+    return _KILLICONS
+
+
+_TC_ICONS = None
+
+
+def _model_stem(path):
+    b = os.path.splitext(os.path.basename((path or "").replace("\\", "/")))[0].lower()
+    return re.sub(r"_[0-9a-f]{8}$", "", b)
+
+
+def tf2cc_model_icons():
+    """Normalised model stem (no folder, no hash suffix) -> kill icon of the installed tf2cc item
+    using that model (tf2cc renames staged models with a hash, e.g. v_stengun_4rdm_ef55bb78)."""
+    global _TC_ICONS
+    if _TC_ICONS is None:
+        from generate import AF_SCHEMA, load_schema
+        _TC_ICONS = {}
+        for k, it in load_schema(AF_SCHEMA).get("items").blocks():
+            if k.isdigit() and int(k) >= 30000 and it.get("model_player") and it.get("item_iconname"):
+                _TC_ICONS.setdefault(_model_stem(it.get("model_player")), it.get("item_iconname"))
+    return _TC_ICONS
+
+
+def donor_killicon(dkv, known=None, model=None):
+    """The kill icon of the weapon the item's MODEL comes from (user 2026-11-16: "reference the
+    killicons of the donor models' originals"; 2026-11-20: "even if stock model donors, use the
+    proper donor killicon, eg the Knee-Tickler is a medic melee using the bonesaw killicon but its
+    model is the fire axe"). A CustomSlop item's item_class is not always the donor's (taunt fix:
+    the class's own melee, saxxy for multi-class melee), and the engine's default kill icon follows
+    the item_class - so the donor's icon must be explicit:
+      1. the donor's own item_iconname (drawable ones only: pipeline.Ctx drops the rest);
+      2. stock donors without one: the icon the engine draws for the donor's own weapon class,
+         i.e. its item_class minus tf_weapon_ / tf2c_weapon_ (tf_weapon_fireaxe -> fireaxe), when
+         the client has that death-notice icon; old Merc / beta models first take the icon of the
+         installed tf2cc item that uses the same model (matched without tf2cc's hash suffix). Projectile launchers have none (the projectile's
+         icon is drawn, e.g. tf_projectile_rocket) and keep the engine default.
+    None = leave item_iconname unset."""
+    ic = dkv.get("item_iconname")
+    if ic:
+        return ic
+    known = known_killicons() if known is None else known
+    tc = tf2cc_model_icons().get(_model_stem(model or dkv.get("model_player"))) if (model or dkv.get("model_player")) else None
+    if tc and tc.lower() in known:
+        return tc                              # the old Merc weapon's own icon (Sten -> tf2cc_merc_stengun_v1)
+    stem = re.sub(r"^tf2?c?_weapon_", "", (dkv.get("item_class") or "").lower())
+    return stem if stem and stem in known else None
+
+
+def _with_killicon(it, dkv):
+    ic = donor_killicon(dkv)
+    if not ic or it.get("item_iconname") == ic:
+        return it
+    return kv.KV([(k, v) for k, v in it.pairs if k.lower() != "item_iconname"] + [("item_iconname", ic)])
+
+
 def _is_merc(classes):
     return any(str(c).lower() in ("mercenary", "merc") for c in classes)
 
@@ -115,7 +181,7 @@ def _is_merc(classes):
 def sanitize(it, src, classes):
     """Copy of donor KV `it` without Merc/tf2cc-only keys (unless the item is for the Mercenary)."""
     if _is_merc(classes):
-        return it
+        return _with_killicon(it, it)
     tf2cc = src in TF2CC_SRCS
     out = kv.KV()
     for k, v in it.pairs:
@@ -144,14 +210,15 @@ def sanitize(it, src, classes):
             if isinstance(v, kv.KV) and [t.lower() for t, _ in v.pairs] == ["customslop"]:
                 out.add(k, v)                            # CustomSlop's own tag; donor tags never
             continue
-        # The kill icon is the donor's own (e.g. the OF rocket launcher's): keep item_iconname for
-        # every donor. The log name stays tf2cc-only.
+        # The kill icon is the donor's own (user, 2026-11-16: "reference the killicons of the donor
+        # models' originals", e.g. the OF rocket launcher's): keep item_iconname for every donor,
+        # and make it explicit for stock donors too (donor_killicon). The log name stays tf2cc-only.
         if kl == "item_logname" and tf2cc:
             continue
         if isinstance(v, str) and kl not in ("model_player", "model_world", "item_iconname") and _TF2CC_REF.search(v):
             continue
         out.add(k, v)
-    return out
+    return _with_killicon(out, it)
 
 
 def _walk(node, path=()):

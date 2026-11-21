@@ -61,11 +61,16 @@ def vtf_check(data):
 
 
 def vmt_check(text, files_root, vfs):
+    # // comments are legal in VMTs (TF2C's pistol_improved starts with a contributor credit line)
+    text = re.sub(r"//[^\n]*", "", text)
     if text.count("{") != text.count("}") or not re.match(r'\s*"?[A-Za-z_]+"?\s*\{', text):
         return False, "does not parse"
     missing = []
-    for key, val in re.findall(r'"(\$(?:basetexture|bumpmap|phongexponenttexture|lightwarptexture|detail|envmapmask|selfillummask))"\s+"([^"]+)"', text, re.I):
-        rel = "materials/" + val.replace("\\", "/").lower() + ".vtf"
+    # keys only at the start of a line: a proxy VALUE such as "animatedtexturevar" "$detail" is not
+    # a texture key (that false match failed every weapon with TF2C's burn-overlay VMTs as
+    # engine_ok=False, 2026-11-21); the texture value may be quoted or not
+    for key, val in re.findall(r'^\s*"?(\$(?:basetexture|bumpmap|phongexponenttexture|lightwarptexture|detail|envmapmask|selfillummask))"?[ \t]+"?([^"\s]+)"?', text, re.I | re.M):
+        rel = "materials/" + re.sub(r"\.vtf$", "", val.replace("\\", "/").lower()) + ".vtf"   # value may carry .vtf
         if not (files_root and os.path.exists(os.path.join(files_root, rel))) and (vfs is None or vfs.read(rel) is None):
             missing.append(val)
     return (not missing), ("missing " + ", ".join(missing)) if missing else "ok"

@@ -22,11 +22,13 @@ import pipeline as P  # noqa: E402  (TYPE_NAMES)
 
 
 def donor_icon(ctx, summ_base):
-    """The donor's CURRENT kill icon (item_iconname) from the donor roster built on the installed
-    tf2cc base (pipeline.Ctx), or None (stock donors: the weapon class's default icon)."""
+    """The model donor's kill icon (labels.donor_killicon on the donor roster built on the installed
+    tf2cc base, pipeline.Ctx): its own item_iconname, else - stock donors - the icon of its own
+    weapon class (fire axe -> fireaxe), so an item whose item_class differs from the donor's (taunt
+    fix: bonesaw / saxxy) still shows the donor's kill icon. None = engine default."""
     for d in ctx.donors:
         if d["src"] == summ_base["src"] and d["id"] == summ_base["id"]:
-            return d["kv"].get("item_iconname")
+            return labels.donor_killicon(d["kv"], ctx.killicons, model=d["mp"])
     return None
 
 
@@ -38,6 +40,21 @@ def relabel(w, tokens, stock, ctx=None):
     if int(key) != w["defindex"]:
         raise SystemExit("item.txt of %s holds %s" % (w["defindex"], key))
     src = json.load(open(os.path.join(d, "summary.json")))["base"]["src"]
+    if ctx is not None and getattr(ctx, "_iconname_only", False):
+        # kill icon only: every other key (type name, attributes, item_class) stays byte-identical
+        ic = donor_icon(ctx, json.load(open(os.path.join(d, "summary.json")))["base"])
+        if ic and it.get("item_iconname") != ic:
+            pairs = [(k, v) for k, v in it.pairs if k.lower() != "item_iconname"]
+            at = next((i for i, (k, _) in enumerate(pairs) if k.lower() == "item_slot"), len(pairs) - 1) + 1
+            pairs.insert(at, ("item_iconname", ic))
+            it = kv.KV(pairs)
+        new = '"%d"\n{\n%s}\n' % (w["defindex"], kv.dump(it, 1))
+        if kv.dump(kv.parse(old)[0].pairs[0][1], 1) == kv.dump(it, 1):
+            new = old
+        errs = labels.label_check(new, tokens)
+        if errs:
+            raise SystemExit("label check failed: %s" % errs)
+        return path, old, new
     ic, slot = it.get("item_class"), it.get("item_slot")
     itn = labels.type_token(ic, slot, src, it.get("item_type_name"), tokens, stock) or \
         P.TYPE_NAMES.get(ic, P.re.sub(r"^tf2?c?_weapon_", "", ic).replace("_", " ").title())
@@ -98,7 +115,11 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--iconname", action="store_true", help="also set item_iconname to the donor's current kill icon")
     ap.add_argument("--typename", action="store_true", help="item_type_name = the donor weapon's own name; re-render the card")
+    ap.add_argument("--iconname-only", action="store_true",
+                    help="ONLY set item_iconname to the model donor's kill icon (no type-name / sanitize changes)")
     a = ap.parse_args()
+    if a.iconname_only:
+        a.iconname = True
     c = Q.cfg()
     st = Q.load_state(c)
     tokens = labels.tf2c_tokens(c["server_root"])
@@ -109,6 +130,7 @@ def main():
         c2["_attr_registry"], c2["_used_hues"] = {}, []
         ctx = P.Ctx(c2)
         ctx._typename, ctx._iconname = a.typename, a.iconname
+        ctx._iconname_only = a.iconname_only
     changed = []
     for k, w in sorted(st["weapons"].items()):
         if w["status"] not in ("approved", "live") or (a.ids and w["defindex"] not in a.ids):
@@ -127,7 +149,8 @@ def main():
             if a.typename:
                 recard(ctx, w, new, tokens)
     if changed and not a.dry_run:
-        Q.journal(st, "relabel", ids=changed, iconname=bool(a.iconname), typename=bool(a.typename))
+        Q.journal(st, "relabel", ids=changed, iconname=bool(a.iconname), typename=bool(a.typename),
+                  iconname_only=bool(a.iconname_only))
         Q.save_state(st)
 
 

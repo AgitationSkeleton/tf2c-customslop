@@ -1,0 +1,376 @@
+{
+ "_doc": "Per-donor icon specs for the v4 cameras (fit_v4.py), from a review of icon_overrides_review.png (item numbers of that review in 'todo'). ref: the donor's ORIGINAL icon (materials-relative, no .vtf; team variants resolved red-first) when its own image_inventory is missing or wrong - TF2C install content only (stock vgui/loadout icons, tf2cc's icons for the old Merc / Open Fortress weapons). model_kind: 'v' = view model in its idle pose. arms: arms model bonemerged onto the view model, as the original icon shows them. hide: material / bone name substrings the original icon does not show. upright: keep the model's up axis vertical (simple side view). Every entry says why.",
+ "tf2c:35": {
+  "todo": [
+   4
+  ],
+  "ref": "vgui/loadout/weapons/red/flare_gun_red",
+  "note": "pose the red model against the red icon (was the blue icon); reviewed camera: v4 fit rolled 30 deg so the barrel lies level like the RED icon",
+  "R": [
+   [
+    0.7558543941347003,
+    -0.1825282089293886,
+    -0.6287826236564547
+   ],
+   [
+    -0.6490470058679307,
+    -0.08251973663155293,
+    -0.7562595303466485
+   ],
+   [
+    0.08615172105732687,
+    0.9797315683447627,
+    -0.18084229302785332
+   ]
+  ],
+  "persp_d": 31.37905657320956,
+  "refine": true
+ },
+ "presplit:30220": {
+  "todo": [
+   23
+  ],
+  "ref": "vgui/loadout/weapons/red/flare_gun_red",
+  "note": "same weapon as tf2c:35; red icon for the red model; reviewed camera: same correction as tf2c:35",
+  "R": [
+   [
+    0.7558543941347003,
+    -0.1825282089293886,
+    -0.6287826236564547
+   ],
+   [
+    -0.6490470058679307,
+    -0.08251973663155293,
+    -0.7562595303466485
+   ],
+   [
+    0.08615172105732687,
+    0.9797315683447627,
+    -0.18084229302785332
+   ]
+  ],
+  "persp_d": 31.37905657320956,
+  "refine": true
+ },
+ "presplit:30200": {
+  "ref": "tf2cc/oldmerc/bucket/bucket_pistol_793ba5d5",
+  "note": "its own (tf2cc) bucket icon, not the stock pistol's"
+ },
+ "presplit:30221": {
+  "ref": "tf2cc/oldmerc/bucket/bucket_pistol_793ba5d5",
+  "note": "its own (tf2cc) bucket icon, not the stock pistol's"
+ },
+ "presplit:30201": {
+  "ref": "tf2cc/oldmerc/bucket/bucket_shotgun_71788638",
+  "note": "its own (tf2cc) bucket icon, not the stock shotgun's"
+ },
+ "presplit:30222": {
+  "ref": "tf2cc/oldmerc/bucket/bucket_shotgun_71788638",
+  "note": "its own (tf2cc) bucket icon, not the stock shotgun's"
+ },
+ "presplit:30202": {
+  "todo": [
+   16
+  ],
+  "ref": "tf2cc/oldmerc/bucket_team/bucket_crowbar_30748489",
+  "note": "its own bucket icon (was the stock shovel's)"
+ },
+ "presplit:30225": {
+  "todo": [
+   25
+  ],
+  "ref": "tf2cc/oldmerc/bucket_team/bucket_crowbar_30748489",
+  "note": "its own bucket icon (was the stock shovel's)"
+ },
+ "tf2classic_beta:30203": {
+  "todo": [
+   17
+  ],
+  "ref": "tf2cc/oldmerc/bucket/bucket_supershotgun_dea092c3",
+  "note": "its own super shotgun bucket icon (was the stock shotgun's)"
+ },
+ "tf2classic_beta:30205": {
+  "ref": "tf2cc/of/bucket/bucket_tommygun_86990600",
+  "note": "tf2cc's Tommy Gun (beta 4) uses this icon; was the stock SMG's"
+ },
+ "tf2classic_beta:30207": {
+  "todo": [
+   18
+  ],
+  "ref": "tf2cc/oldmerc/bucket_team/team_hammerfists_b4",
+  "model_kind": "v",
+  "note": "Hammerfists: tf2cc's own Hammerfists bucket icon (team_hammerfists_b4, approved 2026-11-20) reproduced exactly: tf2cc-rework f451fcb render_fit_icons POSE (pose_matrix knuckle (0,-1,0), roll 60, tilt -0.8; squeeze 8 = each glove moved 8 units toward the other) on the view model's bind pose (= w_hammerfists_b4's geometry, same bounds). Pure rotation + translation, no mirroring",
+  "R": [
+   [
+    -0.6634841772110804,
+    0.6388765649999399,
+    0.38939116744529956
+   ],
+   [
+    0.7443665982921729,
+    0.5111012519999519,
+    0.42976025589975225
+   ],
+   [
+    0.07554544286371329,
+    0.574988908499946,
+    -0.8146659690723348
+   ]
+  ],
+  "persp_d": null,
+  "refine": false,
+  "bind_pose": true,
+  "squeeze": 8.0
+ },
+ "tf2classic_beta:30210": {
+  "todo": [
+   19
+  ],
+  "ref": "tf2cc/oldmerc/bucket/bucket_snubnose_b4_ac78c47d",
+  "note": "its own snubnose bucket icon (was the stock revolver's)"
+ },
+ "tf2classic_beta:30211": {
+  "todo": [
+   20
+  ],
+  "ref": "tf2cc/oldmerc/bucket_team/team_frag_b4_d207a11a",
+  "upright": true,
+  "note": "the beta 4 frag grenade; its own icon (was the stock grenade launcher's, which made it unrecognisable)"
+ },
+ "tf2classic_beta:30212": {
+  "todo": [
+   21
+  ],
+  "ref": "tf2cc/oldmerc/bucket/bucket_heavyartillery_b2_e1527ffd",
+  "note": "its own icon; facing must match it (was the stock minigun's)"
+ },
+ "tf2classic_beta:30213": {
+  "todo": [
+   22
+  ],
+  "ref": "tf2cc/oldmerc/bucket/bucket_stengun_8a270deb",
+  "note": "the Sten's own icon (was the stock SMG's, which posed it sideways); reviewed camera: turned 180 deg - muzzle left, magazine down like its own icon; rolled 25 deg so it slopes like its icon",
+  "R": [
+   [
+    0.06851965813430816,
+    0.9385103265644448,
+    -0.33838354478469657
+   ],
+   [
+    -0.44674314847092306,
+    -0.27440970024563693,
+    -0.8515397088247773
+   ],
+   [
+    -0.8920345373041588,
+    0.20951773992432912,
+    0.40047059931230505
+   ]
+  ],
+  "persp_d": null,
+  "refine": true
+ },
+ "presplit:30224": {
+  "todo": [
+   24
+  ],
+  "ref": "tf2cc/oldmerc/bucket/bucket_stengun_8a270deb",
+  "note": "the Sten's own icon (was the stock SMG's); reviewed camera: turned 180 deg like tf2classic_beta:30213; rolled 25 deg so it slopes like its icon",
+  "R": [
+   [
+    0.06851965813430816,
+    0.9385103265644448,
+    -0.33838354478469657
+   ],
+   [
+    -0.44674314847092306,
+    -0.27440970024563693,
+    -0.8515397088247773
+   ],
+   [
+    -0.8920345373041588,
+    0.20951773992432912,
+    0.40047059931230505
+   ]
+  ],
+  "persp_d": null,
+  "refine": true
+ },
+ "presplit:30226": {
+  "todo": [
+   26
+  ],
+  "ref": "tf2cc/oldmerc/bucket/bucket_coffeepot_b4v2_116942a7",
+  "upright": true,
+  "note": "simple upright coffee pot like its own icon / the bottle"
+ },
+ "presplit:30227": {
+  "todo": [
+   27
+  ],
+  "ref": "tf2cc/of/bucket/bucket_leadpipe_7203e333",
+  "note": "lead pipe: Open Fortress' lead pipe icon (was the stock wrench's)"
+ },
+ "tf2classic_b4:99013": {
+  "todo": [
+   37
+  ],
+  "ref": "tf2cc/oldmerc/bucket/bucket_snubnose_b4_ac78c47d",
+  "note": "beta 4 Six-Shooter = the snubnose revolver; its own icon (b4 points it at the revolver's)"
+ },
+ "tf2classic_b4:99014": {
+  "todo": [
+   38
+  ],
+  "ref": "tf2cc/of/bucket/bucket_tommygun_86990600",
+  "note": "Tommy Gun: the (correct) Tommy Gun icon; b4's image_inventory is the minigun's"
+ },
+ "tf2classic_b4:99015": {
+  "todo": [
+   39
+  ],
+  "ref": "tf2cc/oldmerc/bucket_team/team_frag_b4_d207a11a",
+  "upright": true,
+  "note": "frag grenade: its own icon, simple upright (b4 points it at the grenade launcher's)"
+ },
+ "tf2classic_b4:99017": {
+  "todo": [
+   41
+  ],
+  "ref": "vgui/loadout/weapons/red/umbrella_red",
+  "note": "umbrella: the umbrella icon (b4 points it at the crowbar's)"
+ },
+ "tf2classic_b4:99018": {
+  "todo": [
+   42
+  ],
+  "ref": "tf2cc/oldmerc/bucket/bucket_coffeepot_b4v2_116942a7",
+  "upright": true,
+  "note": "simple upright coffee pot (b4 points it at the bottle's)"
+ },
+ "tf2classic_b4:99019": {
+  "todo": [
+   43
+  ],
+  "ref": "tf2cc/of/bucket/bucket_leadpipe_7203e333",
+  "note": "lead pipe: the lead pipe icon (b4 points it at the shovel's)"
+ },
+ "tf2c:2012": {
+  "todo": [
+   8
+  ],
+  "model_kind": "v",
+  "arms": "models/weapons/c_models/c_heavy_arms.mdl",
+  "note": "TF2C's Chekhov's Punch icon shows the Heavy's arms wearing it: view model in its idle pose + c_heavy_arms",
+  "free": true,
+  "R": [
+   [
+    0.6928975932708288,
+    -0.633686659742071,
+    0.34399730014119306
+   ],
+   [
+    -0.7113550104850357,
+    -0.6786978395156618,
+    0.1826014558939983
+   ],
+   [
+    0.11775811775554153,
+    -0.37122831236546316,
+    -0.9210442800435612
+   ]
+  ],
+  "persp_d": 41.37917246819723,
+  "refine": true
+ },
+ "tf2c:2009": {
+  "todo": [
+   7
+  ],
+  "note": "Shock Therapy: RED icon (was blue, facing backwards); world model, lightning effect plane hidden. The view model + c_medic_arms variant (hand under it) matched its icon worse (canvas IoU 0.39) and was dropped",
+  "free": true,
+  "hide": [
+   "melee_lightning"
+  ]
+ },
+ "of_merc:30103": {
+  "todo": [
+   12
+  ],
+  "model_kind": "v",
+  "arms": "models/weapons/c_models/c_merc_arms.mdl",
+  "hide": [
+   "shield_powerup1"
+  ],
+  "note": "Berserk is only the Merc's fists: OF's bucket shows the Merc arms; the view model's single effect triangle is hidden",
+  "free": true
+ },
+ "tf2classic_b4:90009": {
+  "todo": [
+   28
+  ],
+  "hide": [
+   "prp_shell"
+  ],
+  "note": "beta 4 shotgun view model: hide the loose shell (bone prp_shell); re-fitted without mirroring",
+  "free": true
+ },
+ "tf2classic_b4:90010": {
+  "todo": [
+   29
+  ],
+  "hide": [
+   "prp_shell"
+  ],
+  "note": "beta 4 shotgun view model: hide the loose shell (bone prp_shell); re-fitted without mirroring",
+  "free": true
+ },
+ "tf2classic_b4:90011": {
+  "todo": [
+   30
+  ],
+  "hide": [
+   "prp_shell"
+  ],
+  "note": "beta 4 shotgun view model: hide the loose shell (bone prp_shell); re-fitted without mirroring",
+  "free": true
+ },
+ "tf2classic_b4:90012": {
+  "todo": [
+   31
+  ],
+  "hide": [
+   "prp_shell"
+  ],
+  "note": "beta 4 shotgun view model: hide the loose shell (bone prp_shell); re-fitted without mirroring",
+  "free": true
+ },
+ "tf2c:33": {
+  "todo": [
+   3
+  ],
+  "free": true,
+  "note": "Ubersaw (syringe): rotate to show the two finger holes like its icon (prior-free camera search, RED icon)"
+ },
+ "of_merc:30123": {
+  "R": [
+   [
+    -0.5657873199713251,
+    0.23156178574735758,
+    -0.7913683389807554
+   ],
+   [
+    -0.4115054510471001,
+    0.7523927062098958,
+    0.5143622064272138
+   ],
+   [
+    0.7145263972157977,
+    0.616671999545661,
+    -0.33040531572323145
+   ]
+  ],
+  "persp_d": 27.228178857188198,
+  "note": "reviewed camera: yawed 40 deg toward the side view of its bucket icon"
+ }
+}

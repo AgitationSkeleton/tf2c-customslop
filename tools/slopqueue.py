@@ -143,12 +143,58 @@ def type_history(st, today, nights=5):
     return prev, recent
 
 
+SLOTS = ("primary", "secondary", "melee")
+
+
+def donor_hues(st):
+    """"src:id" -> main hues of every recolour CustomSlop made from that donor (catalogue "hues",
+    else the weapon's summary.json), so a donor's next recolour looks different (palette v4)."""
+    out = {}
+    for w in st.get("weapons", {}).values():
+        b = w.get("base") if isinstance(w.get("base"), dict) else {}
+        if not b.get("src"):
+            continue
+        hs = w.get("hues")
+        if hs is None and w.get("dir"):
+            try:
+                hs = json.load(open(os.path.join(ROOT, w["dir"], "summary.json")))["colours"]["hues"][:1]
+            except Exception:
+                hs = []
+        out.setdefault("%s:%s" % (b["src"], b["id"]), []).extend(hs or [])
+    return out
+
+
+def nightly_slots(rng, st, n):
+    """Tonight's slot for each weapon, fixed BEFORE the donor is picked and kept through rerolls
+    (user 2026-11-21: "customslop is largely favoring melee"). The donor pool is roughly even
+    (34 primary / 40 secondary / 35 melee), but guns fail more gates than melee, and every failed
+    attempt used to re-roll a donor from the WHOLE pool, so melee won by survival (12 of 20).
+    Every 3 weapons cover all three slots in random order; the rest go to the slots the live
+    catalogue has fewest of (ties random)."""
+    have = {sl: 0 for sl in SLOTS}
+    for w in st.get("weapons", {}).values():
+        if w.get("status") in ("approved", "deployed", "pending", "live") and w.get("slot") in have:
+            have[w["slot"]] += 1
+    out = []
+    while len(out) < n:
+        rnd = list(SLOTS)
+        rng.shuffle(rnd)
+        if out:                                        # after the first round: fewest-first
+            rnd.sort(key=lambda sl: have[sl])
+        for sl in rnd[:n - len(out)]:
+            out.append(sl)
+            have[sl] += 1
+    rng.shuffle(out)
+    return out
+
+
 def cmd_generate(a):
     import pipeline
     c = cfg()
     st = load_state(c)
     c["_attr_registry"] = st.setdefault("attr_defs", {})
     c["_used_hues"] = st.setdefault("used_hues", [])
+    c["_donor_hues"] = donor_hues(st)
     ctx = pipeline.Ctx(c)
     import names
     used = names.History.from_catalogue(st["weapons"], ROOT)   # names + descriptions ever made: never repeat/similar
@@ -168,9 +214,11 @@ def cmd_generate(a):
         ctx.attr_registry = c["_attr_registry"]
     recipes = [r for r in FIRST_RECIPES if r["slot"] == gone["slot"]] if gone else \
         TEST_RECIPES if a.test_batch else FIRST_RECIPES if a.first_deploy else \
-        [dict(label="nightly")] * (a.count or c["daily_count"])
+        None
     seed = a.seed if a.seed is not None else int(dt.datetime.now().strftime("%Y%m%d%H"))
     rng = random.Random(seed)
+    if recipes is None:
+        recipes = [dict(label="nightly", slot=sl) for sl in nightly_slots(rng, st, a.count or c["daily_count"])]
     taken_classes = {c_ for w in keep for c_ in w["classes"]}
     prev_types, recent_types = type_history(st, dt.date.today().isoformat())
     taken_types, taken_slots = set(), set()
@@ -221,6 +269,7 @@ def cmd_generate(a):
                                       base=s["base"], status=status, created=dt.date.today().isoformat(),
                                       recipe=r.get("label"), dir=os.path.relpath(out, ROOT),
                                       assets=[m["path"] for m in s["assets"]], asset_bz2=s["asset_bz2"],
+                                      hues=[round(h) for h in s["colours"]["hues"][:1]],
                                       credit=s["base"]["credit"], gate={k: s["gate"].get(k) for k in (
                                           "attempt", "structural", "engine_ok", "hands_ok", "arms_ok", "render_gate",
                                           "detail", "size")})

@@ -29,10 +29,10 @@ def find_material(model, tex, roots):
             p = os.path.join(r, "materials", re.sub("/+", "/", (cd + tex).replace(chr(92), "/")).lstrip("/") + ".vmt")
             if os.path.exists(p):
                 t = open(p, encoding="latin-1").read()
-                mm = re.search(r'"\$basetexture"\s+"([^"]+)"', t, re.I)
-                if not mm:
+                import vmrender                   # one $basetexture parser (quoted or not, .vtf or not)
+                bt = vmrender.basetexture(t)
+                if not bt:
                     return p, None
-                bt = mm.group(1).replace("\\", "/")
                 for r2 in roots:
                     q = os.path.join(r2, "materials", bt + ".vtf")
                     if os.path.exists(q):
@@ -86,7 +86,10 @@ def render(model, roots, size=512, ss=2, yaw=25.0, pitch=12.0, band=(0.92, 0.62)
         lo, hi = md["vstart"], md["vstart"] + md["nverts"]
         first_model[bpi] = (lo, hi)
     keep = []
-    for mat, t in m.tris:
+    bg = getattr(m, "tri_bodygroup", None)          # srcmodel tags: exact even with LOD fixups
+    if bg is not None and len(bg) == len(m.tris):
+        keep = [(mat, t) for (mat, t), (k, j) in zip(m.tris, bg) if len(t) and j == (bodygroups or {}).get(k, 0)]
+    for mat, t in (m.tris if not keep else ()):
         sel = np.zeros(len(t), bool)
         for lo, hi in first_model.values():
             sel |= (t[:, 0] >= lo) & (t[:, 0] < hi)

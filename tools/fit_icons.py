@@ -46,6 +46,7 @@ def stock_icon(ctx, d):
 
 
 OF_DIR = __import__("cspaths").opt("of_dir")   # optional: Open Fortress game folder (icons)
+V4_TF2CC_FIRST = False          # fit_v4.py: OF donors use tf2cc's 512 px copy of their icon first
 _OF_ICONS = None
 
 
@@ -79,10 +80,24 @@ def icon_variants(img):
         return []
     img = img.replace("\\", "/")
     d_, b_ = os.path.dirname(img), os.path.basename(img)
+    # RED first: donor models render with skin 0 (RED), so the reference must be the RED icon
+    # (user: "using a blue one for reference and posing a red one is your issue")
     out = [img + "_large", img, img + "_red", img + "_blue"]
-    for team in ("blue", "red", "green", "yellow"):
+    for team in ("red", "blue", "green", "yellow"):
         out += ["%s/%s/%s_%s" % (d_, team, b_, team), "%s/%s/%s" % (d_, team, b_)]
     return out
+
+
+_SPECS = None
+
+
+def donor_spec(key):
+    """Reviewed per-donor icon spec (tools/icon_donors.json): ref, model_kind, arms, hide, upright."""
+    global _SPECS
+    if _SPECS is None:
+        p = os.path.join(HERE, "icon_donors.json")
+        _SPECS = {k: v for k, v in json.load(open(p)).items() if not k.startswith("_")} if os.path.exists(p) else {}
+    return _SPECS.get(key) or {}
 
 
 def source_icon(ctx, d):
@@ -91,6 +106,22 @@ def source_icon(ctx, d):
     everything else: the donor's own image_inventory read from its own content (TF2C backpack
     icons, April Fools icons, TF2 Classic beta sprites, tf2cc-staged icons)."""
     import re
+    spec = donor_spec("%s:%s" % (d["src"], d["id"]))
+    if spec.get("ref"):
+        import iconrig
+        fs_ = iconrig.fs()                        # TF2C install content (stock + tf2cc icons), cached
+        for rel in icon_variants(spec["ref"]):
+            raw = fs_.read("materials/" + rel + ".vtf") or ctx.fs.read("materials/" + rel + ".vtf")
+            if raw is not None:
+                return IF.square_icon(vtf.decode(raw)[2]), "reviewed reference materials/%s" % rel
+    if d["src"] in ("of_merc", "marxvee") and V4_TF2CC_FIRST:
+        # tf2cc's own 512 px TF2C-convention copy of the Open Fortress bucket icon (what TF2C shows
+        # for this item, so it also gives the right HUD footprint)
+        img = d["kv"].get("image_inventory")
+        for rel in icon_variants(img):
+            raw = ctx.fs.read("materials/" + rel + ".vtf")
+            if raw is not None:
+                return IF.square_icon(vtf.decode(raw)[2]), "%s materials/%s" % (d["src"], rel)
     if d["src"] in ("of_merc", "marxvee") and OF_DIR:
         for mp in (d.get("mw"), d.get("mp")):
             if not mp:
@@ -141,6 +172,13 @@ def fit_donor_v2(ctx, d, rng, version=2, hard=None):
     """v2/v3: fit the camera to the donor's own source-game icon (cache/icon_fit/<key>_v<version>.json).
     v3 adds the thinnest-axis prior, sibling + colour re-ranking and the reviewed override table."""
     key = "%s:%s" % (d["src"], d["id"])
+    if version >= 4:                         # v4 cameras come from fit_v4 (no mirroring, reviewed specs)
+        import fit_v4
+        f = fit_v4.fit_donor(ctx, d, rng)
+        if f:
+            os.makedirs(IF.CACHE, exist_ok=True)
+            json.dump(f, open(IF.cache_path(key, version), "w"), indent=1, default=float)
+        return key, f, None
     icon, why = source_icon(ctx, d)
     if icon is None:
         return key, None, None

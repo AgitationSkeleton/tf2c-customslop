@@ -56,7 +56,8 @@ def lin_to_srgb(x):
 
 # ------------------------------------------------------------------ materials
 def _num(txt, key, default=None):
-    m = re.search(r'"?\$%s"?\s+"?\[?\s*([-0-9.eE ]+?)\s*\]?"?\s*(?:\n|$|//)' % re.escape(key), txt, re.I)
+    # anchored at the line start: a commented-out key ("//$translucent 1") is not a setting
+    m = re.search(r'^\s*"?\$%s"?\s+"?\[?\s*([-0-9.eE ]+?)\s*\]?"?\s*(?:\n|$|//)' % re.escape(key), txt, re.I | re.M)
     if not m:
         return default
     vals = [float(v) for v in m.group(1).split()]
@@ -64,8 +65,11 @@ def _num(txt, key, default=None):
 
 
 def _str(txt, key):
-    m = re.search(r'"?\$%s"?\s+"([^"]+)"' % re.escape(key), txt, re.I)
-    return m.group(1).replace("\\", "/").lower() if m else None
+    m = re.search(r'^\s*"?\$%s"?\s+"?([^"\s]+)"?' % re.escape(key), txt, re.I | re.M)
+    if not m:
+        return None
+    v = m.group(1).replace("\\", "/").lower().strip("/")
+    return v[:-4] if v.endswith(".vtf") else v
 
 
 def parse_vmt(txt, read_vtf):
@@ -82,7 +86,10 @@ def parse_vmt(txt, read_vtf):
                nohalf=bool(_num(txt, "phongdisablehalflambert", 0)),
                envmap=_str(txt, "envmap"), envtint=_num(txt, "envmaptint", None),
                env_basealpha=bool(_num(txt, "basealphaenvmapmask", 0)),
-               env_bumpalpha=bool(_num(txt, "normalmapalphaenvmapmask", 0)))
+               env_bumpalpha=bool(_num(txt, "normalmapalphaenvmapmask", 0)),
+               # coverage flags (icon renderer): see-through glass, cut-out alpha, two-sided
+               translucent=bool(_num(txt, "translucent", 0)), alphatest=bool(_num(txt, "alphatest", 0)),
+               alphatestref=_num(txt, "alphatestreference", 0.5), nocull=bool(_num(txt, "nocull", 0)))
     if not isinstance(mat["envtint"], list) or len(mat["envtint"]) != 3:
         mat["envtint"] = [1.0, 1.0, 1.0] if mat["envmap"] else None
     if not isinstance(mat["fresnel"], list) or len(mat["fresnel"]) != 3:

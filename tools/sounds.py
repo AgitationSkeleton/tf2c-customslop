@@ -33,6 +33,7 @@ SOURCES = [
     ("hl2", os.path.join(VFS.TF2_CLIENT, "hl2", "hl2_sound_vo_english_dir.vpk")),
 ]
 INDEX = os.path.join(ROOT, "analysis", "sound_index.json")
+BLACKLIST = os.path.join(ROOT, "config", "sound_blacklist.local.txt")
 ROLE_MAX_SECONDS = {"single_shot": 2.5, "burst": 2.5, "empty": 1.5, "reload": 4.0, "deploy": 2.0,
                     "melee_miss": 1.5, "melee_hit": 2.0, "melee_hit_world": 2.0}
 CAT_WEIGHT = {"weapon": 0.70, "other": 0.23, "voice": 0.07}
@@ -119,6 +120,14 @@ class Picker:
             self.by.setdefault(r["cat"], []).append(r)
         self.vpks = {}
         self.rejected = []
+        # Optional local-only blacklist (one wave path per line, '#' comments), never committed: an
+        # operator's own "never pick this sound again" list (config/sound_blacklist.local.txt is gitignored).
+        self.blacklist = set()
+        if os.path.exists(BLACKLIST):
+            for ln in open(BLACKLIST, encoding="utf-8"):
+                ln = ln.split("#", 1)[0].strip().lower().replace("\\", "/")
+                if ln:
+                    self.blacklist.add(ln[len("sound/"):] if ln.startswith("sound/") else ln)
 
     def _read(self, r):
         v = self.vpks.get(r["vpk"]) or self.vpks.setdefault(r["vpk"], VFS.VPK(r["vpk"]))
@@ -135,6 +144,8 @@ class Picker:
             if not pool:
                 continue
             r = rng.choice(pool)
+            if r["path"][len("sound/"):].lower() in self.blacklist:
+                continue
             data = self._read(r)
             if data is None:
                 continue

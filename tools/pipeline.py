@@ -92,7 +92,9 @@ SIZE_CAP_BZ2 = 1024 * 1024   # user decision: <= 1 MB bz2 per weapon (models + t
 TYPE_NAMES = {"tf_weapon_pipebomblauncher": "Stickybomb Launcher", "tf_weapon_grenadelauncher": "Grenade Launcher",
               "tf_weapon_rocketlauncher": "Rocket Launcher", "tf_weapon_syringegun_medic": "Syringe Gun",
               "tf_weapon_flamethrower": "Flame Thrower", "tf_weapon_sniperrifle": "Sniper Rifle"}
-ICON_SIZE = 256        # loadout/HUD icon texture (rendered at 512, downsampled; the panel scales it)
+ICON_SIZE = 512        # loadout/HUD icon texture: 512 like every stock / tf2cc icon (user 2026-11-20:
+                       # 256 px icons looked too small in the inventory/loadout panels)
+ICON_VTF_FMT = 15      # DXT5 like the stock icons (512 BGRA8888 would be ~1.4 MB per icon)
 
 
 def known_killicons(fs, server_root):
@@ -165,6 +167,7 @@ class Ctx:
                       encoding="latin-1", errors="replace").read().split("\n"))
         self.item_classes |= {c for fam in FAMILY.values() for c in fam if c in sv}
         self.avoid_hues = [h for _, h in cfg.get("_used_hues", [])[-12:]]
+        self.donor_hues = cfg.get("_donor_hues") or {}       # "src:id" -> main hues of its past recolours
         # CustomSlop-owned attribute definitions (ids 25900+, persisted in the catalogue): the
         # VScript effects plus "display fixes" - an existing attribute_class re-declared with the
         # description format that makes the TF2/TF2C text read true for the rolled value
@@ -559,16 +562,23 @@ def resolve_vmt(ctx, model, tex):
     return None, None
 
 
+def set_basetexture(vmt_text, new):
+    """VMT text with $basetexture pointed at new (key/value quoted or not, as TF2C's own VMTs vary:
+    the old '"$basetexture" "x"'-only pattern left unquoted ones on the ORIGINAL texture, so those
+    weapons failed the recolour_complete gate)."""
+    return re.sub(r'^(\s*"?\$basetexture"?\s+)"?[^"\s]+"?', lambda m_: m_.group(1) + '"%s"' % new, vmt_text,
+                  count=1, flags=re.I | re.M)
+
+
 def recolour_model_textures(ctx, model, out_files, matdir, op, done):
     """For every texture the model names: copy its VMT into matdir with a recoloured basetexture."""
     for tex in model.textures:
         rel, t = resolve_vmt(ctx, model, tex)
         if not t:
             continue
-        mm = re.search(r'"\$basetexture"\s+"([^"]+)"', t, re.I)
-        if not mm:
+        bt = VMR.basetexture(t)               # quoted or not, with or without .vtf
+        if not bt:
             continue
-        bt = mm.group(1).replace("\\", "/").lower()
         if bt not in done:
             raw = ctx.fs.read("materials/" + bt + ".vtf")
             if raw is None:
@@ -589,10 +599,10 @@ def recolour_model_textures(ctx, model, out_files, matdir, op, done):
             fmt = 13 if res[..., 3].min() >= 250 else 15      # DXT1 unless the alpha channel is used
             open(dst, "wb").write(vtf.encode(res, fmt=fmt, mips=info["mips"] > 1, flags=info["flags"] & ~0x4000))
             done[bt] = matdir + "/" + name
-        t2 = re.sub(r'("\$basetexture"\s+)"[^"]*"', lambda m_: m_.group(1) + '"%s"' % done[bt], t, flags=re.I)
+        t2 = set_basetexture(t, done[bt])
         vp = os.path.join(out_files, "materials", matdir, tex.lower() + ".vmt")
         os.makedirs(os.path.dirname(vp), exist_ok=True)
-        open(vp, "w", encoding="latin-1").write(t2)
+        open(vp, "w", encoding="latin-1", newline="").write(t2)
 
 
 def extract_model(ctx, rel, dst_dir):
@@ -806,7 +816,8 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
     matdir = "models/customslop/" + tag
     saved_fs, ctx.fs = ctx.fs, donor["fs"]                 # donor-specific search path (beta/oldmerc files first)
     # ---- colour scheme (region-based, hue-repeat avoidance) and sounds
-    assign, hues = palette.scheme(rng, list(ctx.avoid_hues))
+    # variety: away from recent hues, and well away from earlier recolours of this same donor model
+    assign, hues = palette.scheme(rng, list(ctx.avoid_hues), ctx.donor_hues.get("%s:%s" % (donor["src"], donor["id"]), []))
     ctx.avoid_hues.extend(hues)
     roles = (["melee_miss", "melee_hit", "melee_hit_world", "deploy"] if fam == "melee" else
              ["deploy", "empty"] if fam == "flame" else ["single_shot", "burst", "reload", "empty", "deploy"])
@@ -873,9 +884,12 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
             if g["structural"] and eng_ok and hand_ok and bm_ok and g["render_gate"] and g["recolour_complete"]:
                 break
         else:
-            raise RuntimeError("gates failed after 3 attempts: %s" % {k: gate.get(k) for k in
-                               ("structural", "engine_ok", "hands_ok", "arms_ok", "render_gate", "recolour_complete",
-                                "recolour_missing", "detail")})
+            info_ = {k: gate.get(k) for k in ("structural", "engine_ok", "hands_ok", "arms_ok", "render_gate",
+                                               "recolour_complete", "recolour_missing", "detail")}
+            info_["engine_fail"] = sorted({"%s.%s" % (k, n) for k in gate.get("engine", {})
+                                           for n, (ok, _) in gate["engine"][k].items() if not ok})
+            info_["donor"] = "%s:%s %s" % (donor["src"], donor["id"], donor["kv"].get("item_class"))
+            raise RuntimeError("gates failed after 3 attempts: %s" % info_)
         if ctx.cfg.get("renderer") == "v2":
             # the gates compared v1 renders; the saved previews use the v2 (Source-like) renderer
             orig_img = render_with_fs(ctx, S.load(src_w or src_v), None, v2=True)
@@ -902,7 +916,7 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
         import srcshade as SS_
         rs = lambda im_, sz: SS_.bleed_edges(SS_.resize_premul(im_, sz))       # noqa: E731
         small = rs(np.asarray(icon.convert("RGBA")), (ICON_SIZE, ICON_SIZE))
-        open(ip, "wb").write(vtf.encode(small, fmt=12, mips=True, resample=rs))
+        open(ip, "wb").write(vtf.encode(small, fmt=ICON_VTF_FMT, mips=True, resample=rs))
     else:
         small = icon.convert("RGBA").resize((ICON_SIZE, ICON_SIZE), Image.LANCZOS)
         open(ip, "wb").write(vtf.encode(np.asarray(small), fmt=15, mips=True))
@@ -913,14 +927,21 @@ def make_weapon(ctx, defindex, rng, out_dir, recipe=None, used_names=None):
     # ---- size cap (everything a client downloads for this weapon, bz2 as FastDL serves it)
     import bz2
     import hashlib
-    manifest = []
-    for dp, _, fs_ in os.walk(files):
-        for f in fs_:
-            p_ = os.path.join(dp, f)
-            raw_ = open(p_, "rb").read()
-            manifest.append(dict(path=os.path.relpath(p_, files).replace("\\", "/"), bytes=len(raw_),
-                                 bz2=len(bz2.compress(raw_, 9)), sha1=hashlib.sha1(raw_).hexdigest()))
-    bz_total = sum(x["bz2"] for x in manifest)
+    for shrink in range(3):
+        manifest = []
+        for dp, _, fs_ in os.walk(files):
+            for f in fs_:
+                p_ = os.path.join(dp, f)
+                raw_ = open(p_, "rb").read()
+                manifest.append(dict(path=os.path.relpath(p_, files).replace("\\", "/"), bytes=len(raw_),
+                                     bz2=len(bz2.compress(raw_, 9)), sha1=hashlib.sha1(raw_).hexdigest()))
+        bz_total = sum(x["bz2"] for x in manifest)
+        if bz_total <= SIZE_CAP_BZ2 or shrink == 2:
+            break
+        # over the cap (guns with v + w models and several textures were the usual victims, which
+        # skewed the catalogue to melee): halve this weapon's recoloured textures and measure again
+        gate["texture_shrink"] = shrink + 1
+        shrink_textures(os.path.join(files, "materials", matdir))
     gate["size"] = dict(raw=sum(x["bytes"] for x in manifest), bz2=bz_total, cap=SIZE_CAP_BZ2, ok=bz_total <= SIZE_CAP_BZ2)
     if not gate["size"]["ok"] or not ok_icon:
         raise RuntimeError("size cap / icon gate failed: %s %s" % (gate["size"], why_icon))
@@ -1026,10 +1047,13 @@ def recolour_regions(ctx, src_path, model, files, matdir, assign, done):
         rel, t = resolve_vmt(ctx, model, tex)
         if not t:
             continue
-        mm = re.search(r'"\$basetexture"\s+"([^"]+)"', t, re.I)
-        if not mm:
+        bt = VMR.basetexture(t)               # quoted or not, with or without .vtf
+        if not bt:
+            # no base texture (a flat-colour VMT such as TF2C's "black": $color2 [0 0 0]): paint it
+            # through $color2 so it is part of the scheme (it used to fail recolour_complete)
+            write_flat_vmt(t, os.path.join(files, "materials", matdir, tex.lower() + ".vmt"),
+                           palette.textureless_colour(assign))
             continue
-        bt = mm.group(1).replace("\\", "/").lower()
         raw = ctx.fs.read("materials/" + bt + ".vtf")
         if raw is None:
             continue
@@ -1039,18 +1063,27 @@ def recolour_regions(ctx, src_path, model, files, matdir, assign, done):
             img = np.asarray(Image.fromarray(img, "RGBA").resize((max(4, int(w * kk)), max(4, int(h * kk))), Image.LANCZOS))
         sizes[k] = (img.shape[1], img.shape[0])
         metas[k] = (tex, t, bt, img, info)
-    maps, _ = REG.region_map(src_path, src_model, sizes)
+    v4 = assign.get("_v") == 4
+    if v4:
+        painted = paint_islands(src_path, src_model, sizes, metas, assign, done)
+    else:
+        maps, _ = REG.region_map(src_path, src_model, sizes)
     for k, (tex, t, bt, img, info) in metas.items():
         if bt not in done:
             rgb = img[..., :3].astype(np.float32) / 255
             out = rgb.copy()
-            if k in maps:
+            if v4:
+                out = painted[k]
+            elif k in maps:
                 masks, station = maps[k]
                 covered = np.clip(masks.sum(0), 0, 1)
                 acc = np.zeros_like(rgb)
-                for r_, nm in enumerate(REG.NAMES):
-                    acc += palette.apply_op(rgb, assign[nm], station) * masks[r_][..., None]
-                out = acc + palette.apply_op(rgb, assign["body"], station) * (1 - covered)[..., None]
+                for r_, nm in enumerate(REG.NAMES[:masks.shape[0]]):
+                    if masks[r_].max() <= 0:
+                        continue
+                    op_ = assign.get(nm) or assign["body"]          # v2 schemes have no "rear"
+                    acc += palette.apply_op(rgb, op_, station, masks[r_]) * masks[r_][..., None]
+                out = acc + palette.apply_op(rgb, assign["body"], station, 1 - covered) * (1 - covered)[..., None]
             else:
                 out = palette.apply_op(rgb, assign["body"])
             res = np.dstack([(np.clip(out, 0, 1) * 255 + .5).astype(np.uint8), img[..., 3]])
@@ -1060,10 +1093,90 @@ def recolour_regions(ctx, src_path, model, files, matdir, assign, done):
             fmt = 13 if res[..., 3].min() >= 250 else 15
             open(dst, "wb").write(vtf.encode(res, fmt=fmt, mips=True, flags=info["flags"] & ~0x4000))
             done[bt] = matdir + "/" + name
-        t2 = re.sub(r'("\$basetexture"\s+)"[^"]*"', lambda m_: m_.group(1) + '"%s"' % done[bt], t, flags=re.I)
+        t2 = set_basetexture(t, done[bt])
         vp = os.path.join(files, "materials", matdir, tex.lower() + ".vmt")
         os.makedirs(os.path.dirname(vp), exist_ok=True)
-        open(vp, "w", encoding="latin-1").write(t2)
+        open(vp, "w", encoding="latin-1", newline="").write(t2)
+
+
+def paint_islands(src_path, src_model, sizes, metas, sch, done):
+    """Palette v4: every UV island painted solid as one unit (palette.py). Materials are found
+    jointly over the textures this model uses -> {texture index: painted rgb float}."""
+    maps0, info = REG.island_map(src_path, src_model, sizes)
+    # materials that share one base texture (e.g. the Sten's gun + wood VMTs) are painted together
+    maps, first = {}, {}
+    for k, (tex, t, bt, img, inf) in metas.items():
+        if k in maps0:
+            f_ = first.setdefault(bt, k)
+            if f_ in maps and maps[f_].shape == maps0[k].shape:
+                maps[f_] = np.where(maps[f_] > 0, maps[f_], maps0[k])
+            else:
+                maps[k] = maps0[k]
+    for k, (tex, t, bt, img, inf) in metas.items():
+        if k not in maps and bt in first and first[bt] in maps:
+            maps[k] = maps[first[bt]]
+    stats, rgbs = [], {}
+    for k, (tex, t, bt, img, inf) in metas.items():
+        rgb = img[..., :3].astype(np.float32) / 255
+        rgbs[k] = rgb
+        if k not in maps or bt in done or first.get(bt) != k:
+            continue
+        ids = maps[k]
+        flat, fr = ids.ravel(), rgb.reshape(-1, 3)
+        cnt = np.bincount(flat)
+        sums = np.stack([np.bincount(flat, weights=fr[:, c_], minlength=len(cnt)) for c_ in range(3)], -1)
+        for i in np.nonzero(cnt)[0]:
+            if i == 0:
+                continue
+            stats.append(((k, int(i)), sums[i] / cnt[i], float(cnt[i]) / ids.size))
+    mat_of, mats = palette.materials(stats)
+    mpaint = palette.material_paints(sch, mats)
+    sch["_materials"] = [dict(mean=[round(float(x) * 255) for x in m_["mean"]], area=round(m_["area"], 4),
+                               natural=m_["natural"], paint=mpaint.get(j)) for j, m_ in enumerate(mats)]
+    out = {}
+    for k, rgb in rgbs.items():
+        if k not in maps:
+            out[k] = rgb
+            continue
+        ids = maps[k]
+        groups = {}
+        for (kk, i), mj in mat_of.items():
+            if kk != k:
+                continue
+            isl = i - 1
+            col = palette.island_paint(sch, mpaint.get(mj), float(info["station"][isl]), int(info["label"][isl]),
+                                       float(info["share"][isl]))
+            if col is not None:
+                groups.setdefault((mj, tuple(col)), []).append(i)
+        res = rgb.copy()
+        for (mj, col), isl_ids in groups.items():
+            res = palette.paint(res, np.isin(ids, isl_ids), col, sch)
+        out[k] = res
+    return out
+
+
+def shrink_textures(d):
+    """Halve every VTF in d (the weapon's own recoloured textures; never the icon), min 32 px."""
+    for f in os.listdir(d) if os.path.isdir(d) else ():
+        if not f.lower().endswith(".vtf"):
+            continue
+        p_ = os.path.join(d, f)
+        w, h, img, info = vtf.decode(open(p_, "rb").read())
+        if min(w, h) <= 32:
+            continue
+        img = np.asarray(Image.fromarray(img, "RGBA").resize((w // 2, h // 2), Image.LANCZOS))
+        fmt = 13 if img[..., 3].min() >= 250 else 15
+        open(p_, "wb").write(vtf.encode(img, fmt=fmt, mips=True, flags=info["flags"]))
+
+
+def write_flat_vmt(vmt_text, dst, colour):
+    """Copy a base-texture-less VMT with its $color2 (or $color) set to colour ("[r g b]")."""
+    t2, n = re.subn(r'^(\s*"?\$color2?"?\s+)"[^"]*"', lambda m_: m_.group(1) + '"%s"' % colour, vmt_text,
+                    count=1, flags=re.I | re.M)
+    if not n:
+        t2 = vmt_text.replace("{", '{\n\t"$color2" "%s"' % colour, 1)
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    open(dst, "w", encoding="latin-1", newline="").write(t2)
 
 
 def region_debug_render(ctx, src_path):
@@ -1106,9 +1219,9 @@ def render_with_fs(ctx, model, files_root, v2=False):
             elif ctx.fs.read(relv) is not None:
                 _, t = resolve_vmt(ctx, _One(cd), tname)
             if t:
-                mm = re.search(r'"\$basetexture"\s+"([^"]+)"', t, re.I)
-                if mm:
-                    bt = "materials/" + mm.group(1).replace("\\", "/").lower() + ".vtf"
+                bt = VMR.basetexture(t)
+                if bt:
+                    bt = "materials/" + bt + ".vtf"
                     raw = open(os.path.join(files_root, bt), "rb").read() if files_root and os.path.exists(os.path.join(files_root, bt)) \
                         else ctx.fs.read(bt)
                     if raw:

@@ -25,6 +25,13 @@ import srcmodel as S
 import srcshade as SS
 
 VERSION = 2              # v2: pose fitted to the donor's own source-game icon; Source-like shading
+# v4 fits (fit_v4.py) never mirror: a mirrored render shows a model that does not exist (user: "pistol -
+# model is mirrored", "shotgun model is mirrored"); the other side of the weapon is a turn, not a flip
+ALLOW_MIRROR = True
+
+
+def mirrors():
+    return (False, True) if ALLOW_MIRROR else (False,)
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CACHE = os.path.join(ROOT, "cache", "icon_fit")
 
@@ -37,10 +44,21 @@ def rot(yaw, pitch, roll):
     return Rx @ Ry @ Rz
 
 
-def tri_list(m):
-    """LOD0 triangles of the DEFAULT bodygroups only (model 0 of every bodypart), with skin-0 textures."""
-    ranges = [(bp["models"][0]["vstart"], bp["models"][0]["vstart"] + bp["models"][0]["nverts"]) for bp in m.bodyparts]
+def tri_list(m, bodygroups=None):
+    """LOD0 triangles of the DEFAULT bodygroups only (model 0 of every bodypart, or bodygroups
+    {bodypart: model}), with skin-0 textures. Uses the loader's per-group (bodypart, model) tags;
+    models without them (merged / older objects) fall back to the logical vertex ranges."""
+    bg = getattr(m, "tri_bodygroup", None)
     out = []
+    if bg is not None and len(bg) == len(m.tris):
+        for (mat, t), (k, j) in zip(m.tris, bg):
+            if len(t) and j == (bodygroups or {}).get(k, 0):
+                out.append((m.skins[0][mat] if m.skins and mat < len(m.skins[0]) else mat, t))
+        if out:
+            return out
+    ranges = [(bp["models"][(bodygroups or {}).get(k, 0)]["vstart"],
+               bp["models"][(bodygroups or {}).get(k, 0)]["vstart"] + bp["models"][(bodygroups or {}).get(k, 0)]["nverts"])
+              for k, bp in enumerate(m.bodyparts)]
     for mat, t in m.tris:
         sel = np.zeros(len(t), bool)
         for lo, hi in ranges:
@@ -67,16 +85,35 @@ def persp_xform(P, persp):
     return P
 
 
-def raster_buffers(m, R, size, scale=None, centre=None, textures=None, mirror=False, persp=None):
+def _winding_sign(P, N, tl):
+    """+1/-1: the sign of (geometric normal . vertex normal) for most triangles - which winding is
+    the front face of this model in this (possibly mirrored) view space."""
+    T = np.concatenate([t for _, t in tl]) if tl else np.zeros((0, 3), int)
+    if not len(T):
+        return 1.0
+    g = np.cross(P[T[:, 1]] - P[T[:, 0]], P[T[:, 2]] - P[T[:, 0]])
+    n = N[T[:, 0]] + N[T[:, 1]] + N[T[:, 2]]
+    d = np.einsum("ij,ij->i", g, n)
+    w = np.linalg.norm(g, axis=1)
+    return 1.0 if (np.sign(d) * w).sum() >= 0 else -1.0
+
+
+def raster_buffers(m, R, size, scale=None, centre=None, textures=None, mirror=False, persp=None, mats=None,
+                   cull=None):
     """Orthographic raster: screen x = (R p).x, up = (R p).z, depth = (R p).y. Returns alpha,
-    normal (view space), albedo buffers and the scale/centre used (units -> px)."""
+    normal (view space), albedo buffers and the scale/centre used (units -> px).
+    With mats (srcshade materials) the raster also does what the engine does with coverage:
+    back faces culled (unless $nocull; cull=False disables it), $alphatest texels below the
+    reference discarded, and $translucent / $additive surfaces drawn into a second layer
+    (t_* buffers, nearest translucent surface in front of the opaque one) instead of as opaque."""
     P = m.raw_pos @ R.T
     N = m.raw_nrm @ R.T
     if mirror:
         P[:, 0] *= -1
         N[:, 0] *= -1
-    P = persp_xform(P, persp)
     tl = tri_list(m)
+    wsign = _winding_sign(P, N, tl)
+    P = persp_xform(P, persp)
     used = np.unique(np.concatenate([t.ravel() for _, t in tl]))
     lo, hi = P[used].min(0), P[used].max(0)
     if scale is None:
@@ -86,15 +123,27 @@ def raster_buffers(m, R, size, scale=None, centre=None, textures=None, mirror=Fa
     sx = (P[:, 0] - centre[0]) * scale + size / 2
     sy = size / 2 - (P[:, 2] - centre[1]) * scale
     dep = P[:, 1]
-    z = np.full((size, size), np.inf)
-    alpha = np.zeros((size, size), np.float32)
-    nrm = np.zeros((size, size, 3), np.float32)
-    alb = np.full((size, size, 3), 0.6, np.float32)
-    balpha = np.ones((size, size), np.float32)
-    uvb = np.zeros((size, size, 2), np.float32)
-    matid = np.full((size, size), -1, np.int32)
+    use_mats = mats is not None
+    do_cull = use_mats if cull is None else cull
+
+    def layer():
+        return dict(z=np.full((size, size), np.inf), alpha=np.zeros((size, size), np.float32),
+                    nrm=np.zeros((size, size, 3), np.float32), alb=np.full((size, size, 3), 0.6, np.float32),
+                    balpha=np.ones((size, size), np.float32), uv=np.zeros((size, size, 2), np.float32),
+                    matid=np.full((size, size), -1, np.int32))
+    O = layer()
+    Tl = None
     uv = m.raw_uv
-    for ti, T in tl:
+    order = sorted(tl, key=lambda x: bool(((mats or {}).get(x[0]) or {}).get("translucent")
+                                          or ((mats or {}).get(x[0]) or {}).get("additive")))
+    for ti, T in order:
+        mt = (mats or {}).get(ti) or {}
+        trans = use_mats and bool(mt.get("translucent") or mt.get("additive"))
+        aref = float(mt.get("alphatestref") or 0.5) if use_mats and mt.get("alphatest") else None
+        two_sided = bool(mt.get("nocull")) or not do_cull
+        if trans and Tl is None:
+            Tl = layer()
+        L_ = Tl if trans else O
         tex = (textures or {}).get(ti)
         th, tw = (tex.shape[0], tex.shape[1]) if tex is not None else (1, 1)
         for a, b, c in T:
@@ -107,6 +156,10 @@ def raster_buffers(m, R, size, scale=None, centre=None, textures=None, mirror=Fa
             den = (yb - yc) * (xa - xc) + (xc - xb) * (ya - yc)
             if abs(den) < 1e-12:
                 continue
+            if not two_sided and wsign * den > 0:
+                # screen y points down: den > 0 <=> the triangle's (b-a)x(c-a) normal points away from
+                # the camera; times the model's winding sign that is a back face
+                continue
             gx, gy = np.meshgrid(np.arange(x0, x1 + 1) + .5, np.arange(y0, y1 + 1) + .5)
             w0 = ((yb - yc) * (gx - xc) + (xc - xb) * (gy - yc)) / den
             w1 = ((yc - ya) * (gx - xc) + (xa - xc) * (gy - yc)) / den
@@ -115,25 +168,40 @@ def raster_buffers(m, R, size, scale=None, centre=None, textures=None, mirror=Fa
             if not ins.any():
                 continue
             zz = w0 * dep[a] + w1 * dep[b] + w2 * dep[c]
-            zb = z[y0:y1 + 1, x0:x1 + 1]
+            zb = L_["z"][y0:y1 + 1, x0:x1 + 1]
             win = ins & (zz < zb)
+            if trans:
+                win &= zz < O["z"][y0:y1 + 1, x0:x1 + 1]
             if not win.any():
                 continue
-            zb[win] = zz[win]
-            n = (w0[..., None] * N[a] + w1[..., None] * N[b] + w2[..., None] * N[c])[win]
-            nrm[y0:y1 + 1, x0:x1 + 1][win] = n / (np.linalg.norm(n, axis=1, keepdims=True) + 1e-9)
-            alpha[y0:y1 + 1, x0:x1 + 1][win] = 1
             u = (w0[..., None] * uv[a] + w1[..., None] * uv[b] + w2[..., None] * uv[c])[win]
-            uvb[y0:y1 + 1, x0:x1 + 1][win] = u
-            matid[y0:y1 + 1, x0:x1 + 1][win] = ti
+            tx_ = None
             if tex is not None:
                 tx_ = tex[(np.mod(u[:, 1], 1) * th).astype(int).clip(0, th - 1),
                           (np.mod(u[:, 0], 1) * tw).astype(int).clip(0, tw - 1)]
-                alb[y0:y1 + 1, x0:x1 + 1][win] = tx_[:, :3] / 255.0
-                balpha[y0:y1 + 1, x0:x1 + 1][win] = tx_[:, 3] / 255.0 if tx_.shape[1] > 3 else 1.0
+            if aref is not None and tx_ is not None and tx_.shape[1] > 3:
+                keep = tx_[:, 3] / 255.0 >= aref
+                if not keep.any():
+                    continue
+                sub = np.zeros_like(win)
+                sub[win] = keep
+                win, u, tx_ = sub, u[keep], tx_[keep]
+            zb[win] = zz[win]
+            n = (w0[..., None] * N[a] + w1[..., None] * N[b] + w2[..., None] * N[c])[win]
+            L_["nrm"][y0:y1 + 1, x0:x1 + 1][win] = n / (np.linalg.norm(n, axis=1, keepdims=True) + 1e-9)
+            L_["alpha"][y0:y1 + 1, x0:x1 + 1][win] = 1
+            L_["uv"][y0:y1 + 1, x0:x1 + 1][win] = u
+            L_["matid"][y0:y1 + 1, x0:x1 + 1][win] = ti
+            if tx_ is not None:
+                L_["alb"][y0:y1 + 1, x0:x1 + 1][win] = tx_[:, :3] / 255.0
+                L_["balpha"][y0:y1 + 1, x0:x1 + 1][win] = tx_[:, 3] / 255.0 if tx_.shape[1] > 3 else 1.0
             else:
-                alb[y0:y1 + 1, x0:x1 + 1][win] = 0.6
-    return dict(alpha=alpha, nrm=nrm, alb=alb, balpha=balpha, uv=uvb, matid=matid, scale=scale, centre=centre)
+                L_["alb"][y0:y1 + 1, x0:x1 + 1][win] = 0.6
+    out = dict(alpha=O["alpha"], nrm=O["nrm"], alb=O["alb"], balpha=O["balpha"], uv=O["uv"], matid=O["matid"],
+               scale=scale, centre=centre)
+    if Tl is not None and Tl["alpha"].any():
+        out.update({"t_" + k: v for k, v in Tl.items() if k != "z"})
+    return out
 
 
 DEFAULT_LIGHT = dict(az=-120.0, el=40.0, key=0.75, fill=0.25, rim=0.25, amb=0.30, spec=0.25, gamma=1.0, contrast=1.0)
@@ -281,25 +349,103 @@ def fit(m, textures, icon_rgba, rng, coarse=True):
                                                                            light_ssim=round(bestl[0], 3)))
 
 
-def render_icon(m, textures, f, size=512, ss=None, mats=None, legacy=False, rig=None):
-    """Render with a fitted style. The donor's scale/centre are reused so a longer mutated barrel
-    really looks longer; if the mutated model would leave the canvas it is shrunk to fit.
-    v2: Source-like shading in linear light (srcshade, materials from the VMTs) and a 4x
-    supersample box-downsampled on premultiplied float alpha (crisp 1-px edges, no halos).
+# HUD footprint (user: "make sure their sizings per inventory/bucket are proper, not too big/small"):
+# TF2C draws image_inventory into fixed boxes, so an icon's on-HUD size is its content bbox inside
+# the 512 canvas. All 63 stock 5205 weapon icons are 512x512 with the weapon inside x 7..505,
+# y 95..417 (median bbox 332 x 231, centred). A CustomSlop icon is framed into its donor's
+# reference icon bbox (aspect kept, "contain"), so the mutated weapon has the original weapon's
+# footprint; a mutation never makes the icon larger than the original (Knee-Tickler: the stretched
+# axe used to fall back to a 90%-of-canvas autoscale). Never outside the stock envelope.
+ENVELOPE = (7, 95, 505, 417)
+DEFAULT_BOX = (90, 145, 422, 376)          # donors without any reference icon: the stock median
+
+
+def target_box(f):
+    bb = (f or {}).get("target_bbox") or (f or {}).get("icon_bbox") or DEFAULT_BOX
+    x0, y0, x1, y1 = [float(v) for v in bb]
+    ex0, ey0, ex1, ey1 = ENVELOPE
+    # shrink about the centre (aspect kept) until inside the envelope, then shift inside
+    cx, cy, w, h = (x0 + x1) / 2, (y0 + y1) / 2, x1 - x0, y1 - y0
+    k = min(1.0, (ex1 - ex0) / max(w, 1), (ey1 - ey0) / max(h, 1))
+    w, h = w * k, h * k
+    cx = min(max(cx, ex0 + w / 2), ex1 - w / 2)
+    cy = min(max(cy, ey0 + h / 2), ey1 - h / 2)
+    return (cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2)
+
+
+def frame_to_box(m, R, mirror, persp, box, size=512):
+    """(scale px/unit, centre): the model's projected bbox gets box's area (aspect kept, each side
+    at most 15% past box's, inside the canvas), centred on box, on a size canvas."""
+    P = m.raw_pos @ R.T
+    if mirror:
+        P[:, 0] *= -1
+    P = persp_xform(P, persp)
+    tl = tri_list(m)
+    used = np.unique(np.concatenate([t.ravel() for _, t in tl]))
+    lo, hi = P[used].min(0), P[used].max(0)
+    k = size / 512.0
+    x0, y0, x1, y1 = [v * k for v in box]
+    w_u, h_u = max(hi[0] - lo[0], 1e-6), max(hi[2] - lo[2], 1e-6)
+    bw, bh = x1 - x0, y1 - y0
+    # same visual size as the reference: equal bbox AREA (a mutated weapon of another aspect keeps
+    # the original's size instead of shrinking to "contain"), but no side more than 15% past the
+    # reference's and never outside the canvas (4 px margin)
+    scale = (bw * bh / (w_u * h_u)) ** 0.5
+    scale = min(scale, 1.15 * bw / w_u, 1.15 * bh / h_u, (size - 8 * k) / w_u, (size - 8 * k) / h_u)
+    mc = ((lo[0] + hi[0]) / 2, (lo[2] + hi[2]) / 2)
+    tcx, tcy = (x0 + x1) / 2, (y0 + y1) / 2
+    tcx = min(max(tcx, 4 * k + w_u * scale / 2), size - 4 * k - w_u * scale / 2)
+    tcy = min(max(tcy, 4 * k + h_u * scale / 2), size - 4 * k - h_u * scale / 2)
+    return scale, (mc[0] - (tcx - size / 2) / scale, mc[1] + (tcy - size / 2) / scale)
+
+
+def _composite_translucent(buf, col, mats, rig):
+    """Opaque shading + the translucent layer over it (alpha blend; $additive adds light)."""
+    a = buf["alpha"]
+    ta = buf["t_alpha"]
+    ct = SS.shade(buf["t_nrm"], buf["t_alb"], buf["t_balpha"], buf["t_uv"], buf["t_matid"], ta, mats, rig)
+    add = np.zeros(ta.shape, bool)
+    for k in np.unique(buf["t_matid"][ta > 0]):
+        if ((mats or {}).get(int(k)) or {}).get("additive"):
+            add |= buf["t_matid"] == k
+    op = np.where(add, 0.0, ta * buf["t_balpha"])            # blended glass: base alpha = opacity
+    pre = ct * op[..., None] + col * (a * (1 - op))[..., None]
+    lum = ct.mean(-1) * ta
+    pre = pre + np.where(add, 1.0, 0.0)[..., None] * ct * ta[..., None]
+    cov = np.clip(np.maximum(op + a * (1 - op), np.where(add, np.maximum(a, lum), 0.0)), 0, 1)
+    return pre / np.maximum(cov[..., None], 1e-6), cov
+
+
+def render_icon(m, textures, f, size=512, ss=None, mats=None, legacy=False, rig=None, frame=True):
+    """Render with a fitted style: the donor's camera (rotation, mirror, perspective) and the icon
+    parts it shows (iconrig: class arms, hidden shells), framed into the donor's reference icon
+    bbox (target_box: same HUD footprint as the original weapon's icon).
+    v2: Source-like shading in linear light (srcshade, materials from the VMTs; back faces culled,
+    $alphatest cut-outs, $translucent glass blended) and a 4x supersample box-downsampled on
+    premultiplied float alpha (crisp 1-px edges, no halos).
+    frame=False: the fit's own scale/centre (pre-2026-11-20 behaviour, only for reports).
     legacy=True: the v1 shading/downsample (only for before/after reports)."""
+    import iconrig
     ss = ss or (2 if legacy else 4)
+    m, textures, mats = iconrig.apply(m, textures, mats, f)
     R = np.array(f["R"]) if "R" in f else rot(f["yaw"], f["pitch"], f["roll"])
     S2 = size * ss
-    scale = f["scale"] * ss if f.get("scale") else None
-    centre = tuple(f["centre"]) if f.get("centre") else None
     pp = tuple(f["persp"]) if f.get("persp") else None
-    buf = raster_buffers(m, R, S2, scale=scale, centre=centre, textures=textures, mirror=f["mirror"], persp=pp)
+    if frame:
+        scale, centre = frame_to_box(m, R, f["mirror"], pp, target_box(f), S2)
+    else:
+        scale = f["scale"] * ss if f.get("scale") else None
+        centre = tuple(f["centre"]) if f.get("centre") else None
+    buf = raster_buffers(m, R, S2, scale=scale, centre=centre, textures=textures, mirror=f["mirror"], persp=pp,
+                         mats=None if legacy else (mats if mats is not None else {}))
     bb = bbox(buf["alpha"])
-    if scale is not None and (bb is None or bb[0] <= 1 or bb[1] <= 1 or bb[2] >= S2 - 1 or bb[3] >= S2 - 1):
+    if not frame and scale is not None and (bb is None or bb[0] <= 1 or bb[1] <= 1 or bb[2] >= S2 - 1 or bb[3] >= S2 - 1):
         buf = raster_buffers(m, R, S2, scale=None, centre=None, textures=textures, mirror=f["mirror"], persp=pp)
     a = buf["alpha"]
     if not legacy:
         col = SS.shade(buf["nrm"], buf["alb"], buf["balpha"], buf["uv"], buf["matid"], a, mats, rig)
+        if "t_alpha" in buf:
+            col, a = _composite_translucent(buf, col, mats, rig)
         return Image.fromarray(SS.downsample_premul(col, a, ss), "RGBA")
     col = shade(buf, f.get("light") or DEFAULT_LIGHT)
     pre = np.dstack([col * a[..., None], a])
@@ -431,7 +577,7 @@ def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None, v3=False, mats=
             continue
         R0 = _basis(dvec)
         C2 = (cen @ R0.T)[:, [0, 2]]
-        for mirror in (False, True):
+        for mirror in mirrors():
             C = C2.copy()
             if mirror:
                 C[:, 0] *= -1
@@ -451,6 +597,8 @@ def fit_pose(m, icon_rgba, rng, n_dirs=600, n=96, textures=None, v3=False, mats=
     flip = np.diag([-1.0, -1.0, 1.0])
     for s0, R, mirror, D in best[:(10 if hard else 5)]:
         for R_, mi in ((R, mirror), (flip @ R, mirror), (R, not mirror), (flip @ R, not mirror)):
+            if mi and not ALLOW_MIRROR:
+                continue
             k = (tuple(np.round(R_, 1).ravel()), mi)
             if k not in seen:
                 seen.add(k)
@@ -516,6 +664,8 @@ def _rerank_v3(m, icon_rgba, out, T, score, prior, textures, mats):
     cands, seen = [], set()
     for cs, R, mirror, D in out:
         for R_, mi in ((R, mirror), (flip @ R, mirror), (R, not mirror), (flip @ R, not mirror)):
+            if mi and not ALLOW_MIRROR:
+                continue
             k = (tuple(np.round(R_, 2).ravel()), mi)
             if k not in seen:
                 seen.add(k)
@@ -615,6 +765,7 @@ def posed(m):
     except Exception:
         return m
     m2 = copy.copy(m)
+    m2.bind_pos, m2.bind_nrm = m.raw_pos, m.raw_nrm          # iconrig "bind_pose" icons need these
     m2.raw_pos, m2.raw_nrm = P, N
     return m2
 

@@ -149,6 +149,10 @@ def load(mdl_path):
     m.vtx_version, m.vtx_checksum = i32(x, 0), i32(x, 16)
     nbpx, bpox = i32(x, 28), i32(x, 32)
     m.tris = []
+    # (bodypart, model) of every m.tris entry: tris hold RAW vertex indices (after the LOD fixup
+    # map), so a bodygroup cannot be selected by the models' logical vertex ranges (vstart/nverts)
+    # once a model has fixups - that dropped the scythe's handle and half the bottle in icons
+    m.tri_bodygroup = []
     for k in range(nbpx):
         bo = bpox + k * 8
         nmod, moff = i32(x, bo), i32(x, bo + 4)
@@ -183,6 +187,7 @@ def load(mdl_path):
                         else:
                             t = logical.reshape(-1, 3)
                         m.tris.append((mesh["material"], m.lod0_map[t]))
+                        m.tri_bodygroup.append((k, j))
     return m
 
 

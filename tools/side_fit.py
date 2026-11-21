@@ -113,7 +113,7 @@ def fit_side(x, rng):
             xv = xa - (xa @ d) * d
             xv /= np.linalg.norm(xv)
             R0 = np.stack([xv, d, np.cross(xv, d)])
-            for mirror in (False, True):
+            for mirror in IF.mirrors():
                 # start with the long axis at the icon's principal angle
                 Qp = (P @ R0.T)[:, [0, 2]].copy()
                 if mirror:

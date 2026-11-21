@@ -88,7 +88,7 @@ def main():
         os.makedirs(os.path.dirname(ip), exist_ok=True)
         rs = lambda im_, sz: SS.bleed_edges(SS.resize_premul(im_, sz))       # noqa: E731
         small = rs(np.asarray(icon.convert("RGBA")), (P.ICON_SIZE, P.ICON_SIZE))
-        open(ip, "wb").write(vtf.encode(small, fmt=12, mips=True, resample=rs))
+        open(ip, "wb").write(vtf.encode(small, fmt=getattr(P, "ICON_VTF_FMT", 12), mips=True, resample=rs))
         open(os.path.join(files, rel_vmt), "w").write('"UnlitGeneric"\n{\n\t"$baseTexture" "backpack/customslop/%s_large"\n'
                                                       '\t"$translucent" 1\n\t"$vertexcolor" 1\n\t"$ignorez" 1\n}\n' % tag)
         ok_icon, why_icon = P.VM.vtf_check(open(ip, "rb").read())
@@ -100,8 +100,18 @@ def main():
                 shutil.copyfile(src, src + ".pre_v%d" % n)
         icon.save(os.path.join(d, "icon.png"))
         ipath = os.path.join(d, "item.txt")
-        if not os.path.exists(ipath + ".pre_reicon"):
-            shutil.copyfile(ipath, ipath + ".pre_reicon")
+        # .pre_reicon = the fragment the server keeps until the NEW icon files are verified on
+        # FastDL (apply.item_text). It must be the currently-live fragment: refresh it when the
+        # previous re-render's files are already published (else the server would fall back to an
+        # older icon AND older keys); keep it while a previous re-render is still unpublished.
+        prev = ipath + ".pre_reicon"
+        pub = {r_["path"] for r_ in w.get("published_blobs", [])}
+        prev_unpub = [p_ for p_ in (w.get("icon_pending") or [])
+                      if not any(x == p_ + ".bz2" or x.endswith("/" + p_ + ".bz2") for x in pub)]
+        if not os.path.exists(prev) or not prev_unpub:
+            if os.path.exists(prev):
+                shutil.copyfile(prev, prev + ".v%d" % (n - 1))
+            shutil.copyfile(ipath, prev)
         key_, it = kv.parse(open(ipath, encoding="utf-8").read())[0].pairs[0]
         it = kv.KV([(kk, "backpack/customslop/%s" % tag if kk.lower() == "image_inventory" else v) for kk, v in it.pairs])
         open(ipath, "w", encoding="utf-8", newline="\n").write('"%s"\n{\n%s}\n' % (key_, kv.dump(it, 1)))

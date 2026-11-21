@@ -28,3 +28,4 @@ __pycache__/
 *.ttf
 *.wav
 *.mp3
+config/sound_blacklist.local.txt
