@@ -290,9 +290,33 @@ def semantic_side(p):
     return None
 
 
+def safety_range(p):
+    """(lo, hi) multiplier bounds for a multiplicative class: engine/crash safety only
+    (attrpool.GUARDS clamps), else DEFAULT_MULT_RANGE."""
+    for rx, kind, par in attrpool.GUARDS:
+        if kind == "clamp" and re.search(rx, p["cls"] or ""):
+            return par[0], par[1]
+    return DEFAULT_MULT_RANGE
+
+
+def guard(p, v):
+    """Crash-safety clamps (attrpool.GUARDS) - applied to every rolled value, whatever rolled it."""
+    for rx, kind, par in attrpool.GUARDS:
+        if kind == "clamp" and re.search(rx, p["cls"] or "") and isinstance(v, (int, float)):
+            v = min(max(v, par[0]), par[1])
+    return v
+
+
+DEFAULT_MULT_RANGE = (0.05, 10.0)   # multipliers no guard covers: float scales, nothing divides by them
+MIN_EFFECT = 0.05                   # a multiplier within 5% of 1.0 would not do anything noticeable
+
+
 def roll_value(p, rng, extreme=False, mild=False):
-    """Value whose DISPLAYED number has the sign the description expects (attrpool.direction).
-    mild (v2 rolls): sensible TF2-like magnitudes (+10..50%, -10..40%); extreme: big swings."""
+    """Uniform over the definition's whole working range on the side its text requires
+    (standing rule, user 2026-11-20: "truly random" so long as the item works and does what it
+    says; extreme/mild are ignored - kept only for old callers). Multipliers: side of 1.0 from the
+    mechanics when known (semantic_side), else from the displayed sign; range = the class's
+    crash-safety bounds, starting MIN_EFFECT away from 1.0."""
     fmt, dirn = p["fmt"], p["direction"]
     s = (p.get("desc_text") or "")
     if dirn == "flag":
@@ -300,42 +324,29 @@ def roll_value(p, rng, extreme=False, mild=False):
     else:
         sign = 1 if dirn == "pos" else -1
         sem = semantic_side(p)
-        if sem and fmt in ("value_is_percentage", "value_is_inverted_percentage"):
-            # known mechanics win over the display sign: the card then shows exactly what TF2C shows
-            up = sem == "up"
-            lo, hi = (1.1, 4.0 if extreme else (1.5 if mild else 2.5)) if up else \
-                (0.1 if extreme else (0.6 if mild else 0.3), 0.9)
-            v = round(math.exp(rng.uniform(math.log(lo), math.log(hi))), 2)
-        elif fmt in ("value_is_percentage", "value_is_inverted_percentage"):
-            # displayed n = (v-1)*100 or (1-v)*100; choose |n| then solve for v
-            up_hi = 300 if extreme else (50 if mild else 150)
-            down_hi = 90 if extreme else (40 if mild else 70)
-            if fmt == "value_is_percentage":
-                n = sign * (rng.uniform(10, up_hi) if sign > 0 else rng.uniform(10, down_hi))
-                v = 1 + n / 100
+        if fmt in ("value_is_percentage", "value_is_inverted_percentage"):
+            if sem:
+                up = sem == "up"
             else:
-                n = sign * (rng.uniform(10, down_hi) if sign > 0 else rng.uniform(10, up_hi))
-                v = 1 - n / 100
-            v = round(v, 2)
+                up = (sign > 0) == (fmt == "value_is_percentage")
+            lo, hi = safety_range(p)
+            v = round(rng.uniform(1.0 + MIN_EFFECT, hi), 2) if up else round(rng.uniform(lo, 1.0 - MIN_EFFECT), 2)
         elif fmt == "value_is_additive_percentage":
-            v = sign * round(rng.uniform(0.05, 0.6 if extreme else (0.25 if mild else 0.35)), 2)
+            v = sign * round(rng.uniform(0.01, 1.0), 2)
         else:
             if re.search(r"second", s, re.I):
-                m = round(rng.uniform(1, 12 if extreme else (4 if mild else 6)), 1)
+                m = round(rng.uniform(0.5, 30), 1)
             elif re.search(r"health|hp\b", s, re.I):
-                m = rng.randint(10, 150 if extreme else (40 if mild else 60))
+                m = rng.randint(1, 300)
             elif "%" in s:
-                m = rng.randint(5, 60 if extreme else (30 if mild else 60))
+                m = rng.randint(1, 100)
             else:
-                m = rng.randint(1, 5 if extreme or not mild else 3)
+                m = rng.randint(1, 10)
             # a template that carries its own sign ("Per Shot: -%s1 ammo") takes the magnitude
             v = m if re.search(r"[-+]%s1", s) else sign * m
     if p.get("integer"):
         v = int(round(v))
-    for rx, kind, par in attrpool.GUARDS:      # crash-safety clamps
-        if kind == "clamp" and re.search(rx, p["cls"] or ""):
-            v = min(max(v, par[0]), par[1])
-    return v
+    return guard(p, v)
 
 
 def roll_attributes_v1(ctx, rng, fam, slot, recipe, item_class=None, classes=()):
@@ -379,12 +390,11 @@ def finish_attributes(ctx, rng, chosen, fam, recipe, mild=False, big=()):
     out = []
     for p in chosen:
         v = attreffect.roll(p, rng)
-        if v is None:
-            v = roll_value(p, rng, extreme=recipe.get("extreme", False) or id(p) in big, mild=mild)
+        v = roll_value(p, rng) if v is None else guard(p, v)
         props = getattr(ctx, "_weapon_props", None)
         if props is not None and not attreffect.observable(p, v, props):
-            for _ in range(12):                        # clip / pellets: the rounded result must change
-                v = attreffect.roll(p, rng)
+            for _ in range(40):                        # clip / pellets / ammo per shot must work here
+                v = guard(p, attreffect.roll(p, rng))
                 if attreffect.observable(p, v, props):
                     break
             else:
@@ -406,86 +416,67 @@ def finish_attributes(ctx, rng, chosen, fam, recipe, mild=False, big=()):
     return out
 
 
-# relevance-aware roller (v2): most stats do something on THIS weapon for THIS class
-COMEDY_P = 0.30          # share of weapons with ONE deliberate joke stat (user 2026-11-20: every stat must work
-#                          "with the exception of one or two deliberately-joke stats"); config comedy_share
-COMEDY_P2 = 0.05         # share with TWO (attreffect.JOKE_MAX); config comedy_share2
-BIG_SWING_P = 0.12       # per-attribute chance of a big value swing
-CORE = re.compile(r"^(mult_dmg|mult_postfiredelay|mult_clipsize|mult_reload_time|mult_player_movespeed|add_maxhealth|"
-                  r"mult_maxammo|mult_spread_scale|mult_projectile_speed|mult_explosion_radius|mult_bullets_per_shot|"
-                  r"mult_dmgtaken|mult_deploy_time|mult_crit_chance|mult_flame|mult_sniper_charge|"
-                  r"mult_minigun_spinup|mult_cloak|mult_engy|mult_medigun|mult_wpn_burn|mult_dmg_vs)")
+# roller (v2). Standing rule (user 2026-11-20): "truly random" so long as the item works and does
+# what it says. The only constraints are ones an item needs to WORK: the stat is read for this item
+# class (attrscope source gate), it is on the reviewed whitelist (attreffect: visible, right sign,
+# an effect at the rolled value, applies to this item class), its mechanic exists for the wielding
+# class (relevance needs/provides: e.g. cloak only does something for a Spy), one definition per
+# attribute class (two would stack into one number), no conflicting/cancelling pair
+# (attreffect.CONFLICTS), at most JOKE_MAX deliberate jokes. No weights, no forced upside/downside.
+N_ATTR = (3, 6)          # stats per weapon, uniform (unchanged range)
+# a missing weapon mechanic / class system makes a stat provably inert (no clip -> clip stats do
+# nothing, not a Spy -> no cloak); generic tags ("any", "fire", "unknown") don't, so never jokes
+JOKE_INERT_TAGS = {"spy", "engineer", "medigun", "minigun", "sniperrifle", "scout_or_scattergun", "flame", "airblast",
+                   "grenade_or_sticky", "rocket", "melee", "clip", "bullets", "projectile", "explosive", "headshot",
+                   "backstab", "ammo", "syringe"}
 
 
 def roll_attributes(ctx, rng, fam, slot, recipe, item_class=None, classes=()):
-    """Attributes for one weapon: relevant to its item_class / family / class (relevance.py),
-    at least one meaningful upside and one meaningful downside, class-flavoured themes weighted up,
-    and at most one irrelevant "comedy" stat on ~35% of weapons. Safety exclusions and guards are
-    unchanged (same pool, same clamps)."""
+    """Attributes for one weapon: uniformly random working stats + 0..JOKE_MAX jokes (see above)."""
     if recipe.get("algo") == "v1":
         return roll_attributes_v1(ctx, rng, fam, slot, recipe, item_class, classes)
     classes = list(classes)
     prov = relevance.provides(item_class or "", fam, classes, slot)
-    want = recipe.get("n_attr") or rng.choices([3, 4, 5, 6], weights=[3, 4, 3, 1])[0]
-    r_ = rng.random()
+    want = recipe.get("n_attr") or rng.randint(*N_ATTR)
     comedy = recipe.get("comedy")
     if comedy is None:
-        comedy = 2 if r_ < float(ctx.cfg.get("comedy_share2", COMEDY_P2)) else \
-            (1 if r_ < float(ctx.cfg.get("comedy_share", COMEDY_P)) else 0)
-    comedy = min(int(comedy), attreffect.JOKE_MAX)
+        comedy = rng.randint(0, attreffect.JOKE_MAX)
+    comedy = min(int(comedy), attreffect.JOKE_MAX, want)
     ctx._weapon_props = weapon_props(ctx, item_class, classes)
-    cands = [p for p in ctx.pool if not p["cls"].startswith(("override_projectile_type", "custom_projectile_model"))]
-    # 5205 source gate (attrscope.py): only attributes read on THIS weapon or on the ACTIVE weapon
-    # (never on the player: those act on every weapon and persist across switches and lives), and
-    # actually read for this item class; CustomSlop's VScript effects only if the VScript is installed
-    every = cands
-    if ctx.attr_scope is not None:
-        cands = [p for p in cands if (p.get("vscript") and ctx.cfg.get("vscript_installed"))
-                 or attrscope.works_on(ctx.attr_scope.get(p["cls"]), item_class, ctx.attr_links)]
-    # reviewed effect whitelist (attreffect.py): visible, a value that does something, right sign
-    cands = [p for p in cands if (p.get("vscript") and ctx.cfg.get("vscript_installed"))
-             or attreffect.allowed(p, item_class)]
-    per_cls = collections.Counter(p["cls"] for p in cands)
+    every = [p for p in ctx.pool if not p["cls"].startswith(("override_projectile_type", "custom_projectile_model"))]
+    vs = lambda p: bool(p.get("vscript") and ctx.cfg.get("vscript_installed"))          # noqa: E731
+    cands = every
+    if ctx.attr_scope is not None:      # read on this weapon / the active weapon, for this item class
+        cands = [p for p in cands if vs(p) or attrscope.works_on(ctx.attr_scope.get(p["cls"]), item_class, ctx.attr_links)]
+    cands = [p for p in cands if vs(p) or attreffect.allowed(p, item_class)]            # reviewed whitelist
     nd = {id(p): relevance.needs(p, ctx.attr_cat) for p in cands}
-    rel = [p for p in cands if nd[id(p)] in prov]
-    if len(rel) < 8:                     # relevance tags too narrow for this class: the source gate rules
-        rel = [p for p in cands if nd[id(p)] not in ("none", "unknown")] or list(cands)
-    visible = lambda p: not p["hidden"] and p.get("desc_text")          # noqa: E731
+    rel = [p for p in cands if nd[id(p)] in prov]                                        # mechanic exists
+    by_cls = {}
+    for p in rel:
+        by_cls.setdefault(p["cls"], []).append(p)
     chosen, used = [], set()
 
-    def weight(p):
-        w = 1.0
-        if not visible(p):
-            w *= 0.15
-        if relevance.flavour(p, classes):
-            w *= 4.0
-        if CORE.search(p["cls"]):
-            w *= 2.0
-        if nd[id(p)] != "any":
-            w *= 2.5                                         # weapon-specific mechanics over generic stats
-        return w / per_cls.get(p["cls"], 1)                  # a class with 4 definitions is not 4x as likely
+    def free(c):
+        return c not in used and not attreffect.conflicts(c, used)
 
-    def pick(pool):
-        pool = [p for p in pool if p["cls"] not in used]
-        if not pool:
-            return None
-        p = pool[int(rng.choices(range(len(pool)), weights=[weight(q) for q in pool])[0])]
+    def take(p):
         chosen.append(p)
         used.add(p["cls"])
-        return p
 
-    for c in recipe.get("force", []):
-        m = [p for p in cands if p["cls"] == c and p["cls"] not in used]
+    for c in recipe.get("force", []):                    # explicit recipe (first-deploy / tests only)
+        m = [p for p in cands if p["cls"] == c and free(c)]
         if m:
-            chosen.append(m[0])
-            used.add(c)
+            take(m[0])
     for _ in range(recipe.get("mvm", 0)):
-        pick([p for p in rel if p["mvm"]])
-    pick([p for p in rel if p["effect"] == "positive" and visible(p)])          # meaningful upside
-    pick([p for p in rel if p["effect"] == "negative" and visible(p)])          # meaningful downside
+        m = [p for p in rel if p["mvm"] and free(p["cls"])]
+        if m:
+            take(m[rng.randrange(len(m))])
     while len(chosen) < want - comedy:
-        if pick(rel) is None:
+        open_ = sorted(c for c in by_cls if free(c))
+        if not open_:
             break
+        defs = by_cls[open_[rng.randrange(len(open_))]]  # uniform over attribute classes, then over
+        take(defs[rng.randrange(len(defs))])             # that class's definitions (bonus / penalty)
     jokes = []
     if comedy:
         # deliberate jokes: a reviewed, visible stat that is provably INERT here - weapon-scoped (never
@@ -494,25 +485,23 @@ def roll_attributes(ctx, rng, fam, slot, recipe, item_class=None, classes=()):
         # rocket launcher). Marked joke=True in the summary.
         jp = []
         for p in every:
-            if p["cls"] in used or p.get("vscript") or not attreffect.SPEC.get(p["name"]) or not visible(p):
+            if p.get("vscript") or not attreffect.SPEC.get(p["name"]) or p["hidden"] or not p.get("desc_text"):
                 continue
             info = ctx.attr_scope.get(p["cls"]) if ctx.attr_scope is not None else None
             if not info or info["verdict"] != "safe":
                 continue
             works = attrscope.works_on(info, item_class, ctx.attr_links) and attreffect.allowed(p, item_class)
             need = relevance.needs(p, ctx.attr_cat)
-            if not works or (need not in prov and need not in ("any", "unknown", "none")):
+            if not works or (need not in prov and need in JOKE_INERT_TAGS):
                 jp.append(p)
         for _ in range(comedy):
-            q = [p for p in jp if p["cls"] not in used]
+            q = [p for p in jp if free(p["cls"])]
             if not q:
                 break
             j = q[rng.randrange(len(q))]
-            chosen.append(j)
-            used.add(j["cls"])
+            take(j)
             jokes.append(j)
-    big = {id(p) for p in chosen if rng.random() < BIG_SWING_P}
-    out = finish_attributes(ctx, rng, chosen, fam, recipe, mild=True, big=big)
+    out = finish_attributes(ctx, rng, chosen, fam, recipe)
     by_name = {}
     for p in chosen:
         by_name.setdefault(p["name"], p)

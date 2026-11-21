@@ -125,12 +125,31 @@ def run_apply(a):
                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def lower_priority():
+    """02:00 prepare runs while the game servers are up: idle priority (child processes
+    inherit it), so rendering and the engine gate never compete with live servers. The 03:00
+    apply keeps normal priority (servers are down, and its engine gate has a time budget)."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.windll.kernel32
+        k32.GetCurrentProcess.restype = wintypes.HANDLE
+        k32.SetPriorityClass.argtypes = (wintypes.HANDLE, wintypes.DWORD)
+        k32.SetPriorityClass(k32.GetCurrentProcess(), 0x40)        # IDLE_PRIORITY_CLASS (servers run at BelowNormal)
+    except Exception:
+        pass
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("step", choices=["prepare", "apply", "verify"])
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--publish-only", action="store_true")
     a = ap.parse_args()
+    if a.step == "prepare":
+        lower_priority()
     try:
         {"prepare": prepare, "apply": run_apply, "verify": lambda a_: verify(Q.cfg())}[a.step](a)
     except Exception as e:                 # never fail the caller (RunServers.bat must continue)

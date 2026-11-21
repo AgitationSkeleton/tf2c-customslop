@@ -120,8 +120,7 @@ def strip_one(ctx, w, cl, ln, dry, effect=False):
         ncls = {}
         for p in cands:
             ncls[p["cls"]] = ncls.get(p["cls"], 0) + 1
-        wts = [(4.0 if P.relevance.flavour(p, classes) else 1.0) * (4.0 if P.CORE.search(p["cls"]) else 1.0)
-               / ncls[p["cls"]] for p in cands]
+        wts = [1.0 / ncls[p["cls"]] for p in cands]       # uniform over attribute classes (standing rule 2026-11-20)
         out = None
         for _ in range(30):
             p = cands[int(rng.choices(range(len(cands)), weights=wts)[0])]

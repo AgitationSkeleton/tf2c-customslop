@@ -68,31 +68,33 @@ EXCLUDE = [  # (regex on class or name, reason)
      r"engy_disposable)", "needs a building/canteen system that a random weapon slot does not drive"),
 ]
 
-# guarded: (regex on class, kind, params) - value clamps/whitelists that keep the server alive
+# guarded: (regex on class, kind, params) - value clamps/whitelists that keep the server alive.
+# Standing rule (user 2026-11-20): these are ENGINE/CRASH safety bounds only, never balance caps;
+# ridiculous values in either direction are intended (widened 2026-11-20, engine-tested: extremetest.py).
 GUARDS = [
     (r"^override_projectile_type(_zoomed)?$", "whitelist", "per-base whitelist of 5205 projectile IDs the base gun fires (bullet 1, rocket 2, pipe 3, sticky 4, syringe 5, flare 6, arrow 8, cannonball 17, nail 31, brick 32, coil 33, mirv 34, dart 39); untested combos stay off until the test-server matrix passes"),
     (r"^custom_projectile_model$", "list", "only models from analysis/projectile_model_candidates.json (4-40 u, TF2/TF2C content the client already has); rocket/grenade bases only"),
     (r"^mod_projectiles_per_shot$", "clamp", [1, 3]),
-    (r"^mult_bullets_per_shot$", "clamp", [0.5, 4.0]),
-    (r"^mult_postfiredelay$", "clamp", [0.25, 5.0]),
-    (r"^mult_player_movespeed|movespeed", "clamp", [0.5, 1.6]),
+    (r"^mult_bullets_per_shot$", "clamp", [0.5, 6.0]),
+    (r"^mult_postfiredelay$", "clamp", [0.08, 10.0]),
+    (r"^mult_player_movespeed|movespeed", "clamp", [0.2, 3.0]),
     (r"^mod_set_player_scale|player_scale|model_scale", "clamp", [0.5, 1.5]),
     (r"^(head_scale|torso_scale|hand_scale|voice_pitch)", "clamp", [0.4, 2.5]),
     (r"^add_maxhealth", "clamp", [-100, 300]),
-    (r"^(mult_clipsize|mult_clipsize_upgrade)$", "clamp", [0.1, 8.0]),
+    (r"^(mult_clipsize|mult_clipsize_upgrade)$", "clamp", [0.05, 20.0]),
     (r"^mod_max_primary_clip_override$", "clamp", [1, 200]),
-    (r"^mult_maxammo", "clamp", [0.05, 8.0]),
-    (r"^mult_explosion_radius$", "clamp", [0.2, 3.0]),
+    (r"^mult_maxammo", "clamp", [0.05, 10.0]),
+    (r"^mult_explosion_radius$", "clamp", [0.1, 5.0]),
     (r"^mult_projectile_scale$", "clamp", [0.3, 3.0]),
-    (r"^mult_projectile_speed$", "clamp", [0.35, 3.0]),
+    (r"^mult_projectile_speed$", "clamp", [0.1, 5.0]),
     (r"^(apply_z_velocity_on_damage|apply_look_velocity_on_damage)$", "clamp", [-600, 900]),
-    (r"^(mult_dmgself_push_force|damage_force|airblast_pushback_scale|mult_.*knockback)", "clamp", [0.0, 4.0]),
-    (r"^(mult_dmg|mult_dmg_.*)$", "clamp", [0.05, 6.0]),
-    (r"^(mult_reload_time|mult_deploy_time|mult_switch_from_wep_deploy_time|mult_.*_time)$", "clamp", [0.1, 8.0]),
+    (r"^(mult_dmgself_push_force|damage_force|airblast_pushback_scale|mult_.*knockback)", "clamp", [0.0, 10.0]),
+    (r"^(mult_dmg|mult_dmg_.*)$", "clamp", [0.02, 20.0]),
+    (r"^(mult_reload_time|mult_deploy_time|mult_switch_from_wep_deploy_time|mult_.*_time)$", "clamp", [0.05, 10.0]),
     (r"^(add_health_regen|active_item_health_regen)$", "clamp", [-15, 25]),
-    (r"^mod_jump_height|jump_height", "clamp", [0.5, 2.0]),
-    (r"^(mult_gravity|gravity)", "clamp", [0.3, 2.0]),
-    (r"^melee_range_multiplier$", "clamp", [0.5, 3.0]),
+    (r"^mod_jump_height|jump_height", "clamp", [0.2, 4.0]),
+    (r"^(mult_gravity|gravity)", "clamp", [0.1, 5.0]),
+    (r"^melee_range_multiplier$", "clamp", [0.3, 6.0]),
     (r"^set_weapon_range$", "clamp", [64, 4096]),
 ]
 

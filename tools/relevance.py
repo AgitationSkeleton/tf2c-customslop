@@ -21,6 +21,14 @@ import re
 
 # (regex on attribute_class, needs)
 RULES = [
+    # reviewed 2026-11-20 against the read sites (attreffect.py): these act on the WIELDER / any target,
+    # whatever the class - the generic regexes below would tie them to the Engineer / Medic / Sniper
+    (r"^(mult_dmg_vs_buildings|mult_medigun_healing_received_active|mult_dispenser_healing_received_active|"
+     r"mult_patient_overheal_penalty_active|dispenser_can_overheal_active|no_primary_ammo_from_dispensers|"
+     r"mod_tranq_onhit|crit_airborne_simple)$", "any"),
+    (r"^(headshot_damage_modify|headshot_is_minicrit)$", "headshot"),
+    (r"^unimplemented_mod_sniper_no_charge$", "sniperrifle"),
+    (r"^explosive_bullets$", "bullets"),
     (r"^(bot_|halloween_|hwn_|currency|powerup_|ragdolls_|player_skin|special_taunt|never_override_taunt|"
      r"enable_misc2|add_jingle|rocket_whistle|use_large_smoke|mod_never_draw_tracer|mod_always_draw_tracer|"
      r"add_player_capturevalue|set_turn_to_gold|set_watch_panel|provide_on_active|counts_as_assister|"
