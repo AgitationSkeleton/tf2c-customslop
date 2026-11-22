@@ -62,7 +62,7 @@ def prepare(a):
             try:
                 subprocess.run([sys.executable, "-I", os.path.join(HERE, "slopqueue.py"), "generate",
                                 "--count", str(c["daily_count"]), "--stop-by", str(time.time() + budget)],
-                               check=False, timeout=budget + 60)
+                               check=False, timeout=budget + 60, stdout=sys.stdout, stderr=sys.stdout)
             except subprocess.TimeoutExpired:
                 print("generate hit the prepare budget; weapons finished so far are kept")
         Q.journal(Q.load_state(c), "prepare_generated", date=today)
@@ -70,11 +70,26 @@ def prepare(a):
     if left < 5 * 60:
         print("too close to the deadline - publishing waits for the next night")
         return
-    try:
-        subprocess.run([sys.executable, "-I", os.path.join(HERE, "publish.py"), "--apply"], check=False,
-                       timeout=max(60, left - 5 * 60))
-    except subprocess.TimeoutExpired:
-        print("publish timed out; unverified weapons stay unpublished (apply skips them)")
+    for attempt in (1, 2):
+        try:
+            r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "publish.py"), "--apply"], check=False,
+                               timeout=max(60, seconds_left() - 5 * 60), stdout=sys.stdout, stderr=sys.stdout)
+            print("publish exit code %d (attempt %d)" % (r.returncode, attempt))
+        except subprocess.TimeoutExpired:
+            print("publish timed out; unverified weapons stay unpublished (apply skips them)")
+            break
+        pending = [w["defindex"] for w in Q.load_state(c)["weapons"].values()
+                   if w["status"] == "approved" and not w.get("published")]
+        if not pending:
+            break
+        # 2026-11-22: a one-off publish failure left the whole night's batch unpublished; retry once
+        if attempt == 1 and seconds_left() > 12 * 60:
+            print("publish left %d weapon(s) unpublished %s; retrying in 2 minutes" % (len(pending), pending))
+            sys.stdout.flush()
+            time.sleep(120)
+        else:
+            print("still unpublished after retry: %s (they wait for the next night)" % pending)
+            break
     verify(c)
 
 
@@ -88,7 +103,7 @@ def verify(c):
         return
     try:
         subprocess.run([sys.executable, "-I", os.path.join(HERE, "apply.py"), "--server-root", c["server_root"],
-                        "--verify-only"], check=False, timeout=left)
+                        "--verify-only"], check=False, timeout=left, stdout=sys.stdout, stderr=sys.stdout)
     except subprocess.TimeoutExpired:
         print("engine gate timed out before the deadline")
 
@@ -150,6 +165,10 @@ def main():
     a = ap.parse_args()
     if a.step == "prepare":
         lower_priority()
+        # the 02:00 task has no console: keep prepare's output (and its children's) in state/nightly.log
+        log = open(os.path.join(ROOT, "state", "nightly.log"), "a", encoding="utf-8", buffering=1)
+        sys.stdout = sys.stderr = log
+        print("=== prepare %s ===" % dt.datetime.now().isoformat(timespec="seconds"))
     try:
         {"prepare": prepare, "apply": run_apply, "verify": lambda a_: verify(Q.cfg())}[a.step](a)
     except Exception as e:                 # never fail the caller (RunServers.bat must continue)
